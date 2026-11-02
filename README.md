@@ -9,6 +9,7 @@
 ![Qdrant](https://img.shields.io/badge/Qdrant-1.12-DC244C)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
+[![CI](https://github.com/13657940158/claude02/actions/workflows/ci.yml/badge.svg)](https://github.com/13657940158/claude02/actions/workflows/ci.yml)
 
 ## 能力概览
 
