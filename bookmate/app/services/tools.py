@@ -20,7 +20,7 @@ from app.models.user import User
 from app.services import books as book_service
 from app.services import domains as domain_service
 from app.services import recommend as recommend_service
-from app.services.rag.analysis import analyze_book, analysis_out
+from app.services.rag.analysis import analysis_out, analyze_book
 from app.services.rag.retrieval import retrieve
 
 logger = get_logger(__name__)

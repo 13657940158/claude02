@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -172,10 +174,8 @@ async def delete_memory(db: AsyncSession, user_id: int, memory_id: int) -> bool:
     memory.status = "deleted"
     await db.commit()
     if memory.embedding_id:
-        try:
+        with contextlib.suppress(Exception):
             await vector_store.delete_memory_points([memory.embedding_id])
-        except Exception:  # noqa: BLE001
-            pass
     return True
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator
 
@@ -18,7 +19,7 @@ from app.services.llm.client import get_llm_client
 from app.services.llm.guardrails import check_input, looks_like_refusal, validate_citations
 from app.services.llm.prompts import CHAT_SYSTEM, PROMPT_VERSION
 from app.services.tools import execute_tool, plan_tools, record_tool_calls
-from app.utils.text import excerpt, estimate_tokens
+from app.utils.text import estimate_tokens, excerpt
 from app.utils.timeutil import now_utc
 
 logger = get_logger(__name__)
@@ -371,7 +372,7 @@ async def stream_message(
                                                         operation="chat_stream"):
             parts.append(delta)
             yield {"type": "delta", "text": delta}
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         degraded = True
         fallback = _fallback_answer(invocations)
         yield {"type": "delta", "text": fallback}
@@ -398,10 +399,8 @@ async def stream_message(
         session.title = excerpt(text, limit=TITLE_LIMIT)
     await db.commit()
     await db.refresh(reply)
-    try:
+    with contextlib.suppress(Exception):
         await memory_service.remember_turn(db, user.id, await _recent_context(db, session.id), source_id=session.id)
-    except Exception:  # noqa: BLE001
-        pass
     yield {"type": "done", "message": message_out(reply), "degraded": degraded}
 
 

@@ -10,8 +10,8 @@ from sqlalchemy import text
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.session import engine
-from app.services.rag.vector_store import probe_collection
 from app.services.api_probe import probe_online_apis
+from app.services.rag.vector_store import probe_collection
 from app.utils.redis_client import get_redis
 
 logger = get_logger(__name__)

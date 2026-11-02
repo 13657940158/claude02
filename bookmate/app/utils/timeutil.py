@@ -1,7 +1,7 @@
 """时间工具：业务日期按 APP_TIMEZONE 计算，存储统一 UTC naive。"""
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, timezone, tzinfo
 
 from app.core.config import get_settings
 
@@ -17,7 +17,7 @@ def app_tz() -> tzinfo:
 
 
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def today_local() -> date:
@@ -27,20 +27,20 @@ def today_local() -> date:
 def to_local(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
-    aware = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    aware = dt if dt.tzinfo else dt.replace(tzinfo=UTC)
     return aware.astimezone(app_tz())
 
 
 def iso_utc(dt: datetime | None) -> str | None:
     if dt is None:
         return None
-    aware = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    aware = dt if dt.tzinfo else dt.replace(tzinfo=UTC)
     return aware.isoformat().replace("+00:00", "Z")
 
 
 def day_start_utc(day: date) -> datetime:
     local = datetime.combine(day, time.min, tzinfo=app_tz())
-    return local.astimezone(timezone.utc).replace(tzinfo=None)
+    return local.astimezone(UTC).replace(tzinfo=None)
 
 
 def date_diff_days(later: date, earlier: date) -> int:

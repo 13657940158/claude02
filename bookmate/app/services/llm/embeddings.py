@@ -32,7 +32,7 @@ def _mock_vector(text: str, dim: int) -> list[float]:
 
 def _cache_key(text: str) -> str:
     model = get_settings().embedding_model
-    return "bm:emb:" + hashlib.sha256(f"{model}|{text}".encode("utf-8")).hexdigest()
+    return "bm:emb:" + hashlib.sha256(f"{model}|{text}".encode()).hexdigest()
 
 
 async def _cache_get_many(texts: list[str]) -> dict[str, list[float]]:
@@ -93,7 +93,7 @@ async def _call_api(texts: list[str]) -> list[list[float]]:
                         message=f"Embedding 维度 {len(vector)} 与配置 {settings.embedding_dim} 不一致",
                     )
             return [list(map(float, vector)) for vector in vectors]
-        except (AppError,):
+        except AppError:
             raise
         except Exception as exc:  # noqa: BLE001
             last = exc

@@ -315,7 +315,7 @@ async def get_profile(db: AsyncSession, user_id: int) -> Profile | None:
 
 
 async def profile_out(profile: Profile) -> dict:
-    from app.schemas.profile import DIM_LABELS, GOAL_LABELS, LEVELS
+    from app.schemas.profile import DIM_LABELS, GOAL_LABELS
 
     return {
         "user_id": profile.user_id,

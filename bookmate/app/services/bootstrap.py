@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass, field
 
@@ -20,11 +21,11 @@ from app.core.logging import get_logger
 from app.db.session import SessionLocal
 from app.models.book import Book, Chunk
 from app.models.ops import BootstrapRun
+from app.scripts.seed_books import seed_books
 from app.services.auth import ensure_admin
 from app.services.rag import vector_store
 from app.services.rag.ingest import scan_and_ingest
 from app.services.rag.retrieval import retrieve
-from app.scripts.seed_books import seed_books
 from app.utils.redis_client import get_redis
 from app.utils.timeutil import now_utc
 
@@ -67,10 +68,8 @@ async def _acquire_lock() -> bool:
 
 
 async def _release_lock() -> None:
-    try:
+    with contextlib.suppress(Exception):
         await get_redis().delete(LOCK_KEY)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 async def retrieval_self_check(db: AsyncSession) -> dict:
@@ -224,7 +223,7 @@ async def run_bootstrap_guarded(
     """限时自举；超时返回 partial，避免启动容器长期挂起。"""
     try:
         return await asyncio.wait_for(run_bootstrap(trigger, ingest_limit=ingest_limit), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error("bootstrap_timeout", extra={"extra_fields": {"timeout": timeout}})
         return BootstrapResult(status="partial", stages=[{"stage": "timeout", "status": "failed"}])
 

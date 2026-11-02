@@ -20,7 +20,7 @@ class Page(BaseModel, Generic[T]):
     has_next: bool = False
 
     @classmethod
-    def build(cls, items: list[T], total: int, page: int, page_size: int) -> "Page[T]":
+    def build(cls, items: list[T], total: int, page: int, page_size: int) -> Page[T]:
         return cls(
             items=items,
             total=total,

@@ -8,13 +8,13 @@
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -78,10 +78,8 @@ async def _cache_get(domain: str, query: str) -> dict | None:
 
 
 async def _cache_set(domain: str, query: str, data: dict) -> None:
-    try:
+    with contextlib.suppress(Exception):
         await get_redis().set(_cache_key(domain, query), json.dumps(data, ensure_ascii=False), ex=CACHE_TTL)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def _mock_payload(domain: str, query: str) -> dict[str, Any]:

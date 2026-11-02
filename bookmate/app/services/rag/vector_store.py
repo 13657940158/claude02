@@ -1,6 +1,7 @@
 """Qdrant 客户端、集合管理、向量点读写与记忆向量空间。"""
 from __future__ import annotations
 
+import contextlib
 import uuid
 from typing import Any
 
@@ -106,20 +107,16 @@ async def ensure_collection(recreate_on_dim_mismatch: bool = False) -> dict[str,
         ("chunk_no", PayloadSchemaType.INTEGER),
         ("chunk_id", PayloadSchemaType.INTEGER),
     ):
-        try:
+        with contextlib.suppress(Exception):  # 已存在时忽略
             await client.create_payload_index(name, field_name=field, field_schema=schema)
-        except Exception:  # noqa: BLE001 - 已存在时忽略
-            pass
     mem_name = memory_collection()
     if not await client.collection_exists(mem_name):
         await client.create_collection(
             collection_name=mem_name,
             vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
         )
-        try:
+        with contextlib.suppress(Exception):
             await client.create_payload_index(mem_name, field_name="user_id", field_schema=PayloadSchemaType.INTEGER)
-        except Exception:  # noqa: BLE001
-            pass
     return await probe_collection(name)
 
 

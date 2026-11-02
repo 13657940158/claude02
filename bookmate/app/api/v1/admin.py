@@ -9,10 +9,11 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
-from app.api.deps import AdminUser, DB
+from app.api.deps import DB, AdminUser
 from app.core.config import get_settings
 from app.core.errors import ok
-from app.models.book import Analysis, Book, Chapter as ChapterModel, Chunk
+from app.models.book import Analysis, Book, Chunk
+from app.models.book import Chapter as ChapterModel
 from app.models.chat import ChatMessage, ChatSession, ToolCall
 from app.models.eval import EvalAdjustment, EvalCase, EvalRun, PromptVersion
 from app.models.governance import AuditLog, SecurityEvent

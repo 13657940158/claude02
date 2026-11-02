@@ -19,8 +19,8 @@ from app.core.errors import AppError, not_found
 from app.core.logging import get_logger
 from app.models.book import Analysis, Book, Chapter, Chunk
 from app.services.llm.client import get_llm_client
-from app.services.llm.prompts import PROMPT_VERSION, analysis_user_prompt
 from app.services.llm.guardrails import truncate
+from app.services.llm.prompts import PROMPT_VERSION, analysis_user_prompt
 from app.utils.timeutil import now_utc
 
 logger = get_logger(__name__)
