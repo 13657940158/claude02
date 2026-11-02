@@ -1,0 +1,15 @@
+# 统一换行，避免 Windows 检出后 shell 脚本在 Linux 容器里出现 ^M
+* text=auto
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.conf text eol=lf
+*.toml text eol=lf
+*.ini  text eol=lf
+Dockerfile text eol=lf
+.env.example text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.txt  text eol=lf

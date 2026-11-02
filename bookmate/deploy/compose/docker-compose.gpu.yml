@@ -1,0 +1,50 @@
+# GPU 侧部署（可选叠加文件）
+#
+# 重要：本项目所有 LLM / Embedding / Rerank 都走在线 API（SiliconFlow 等），
+# CPU 栈不需要 GPU，也不会在本地加载任何模型。GPU 机器默认只做两件事：
+#   1) 与 CPU 栈共享 bookmate-net 网络，便于将来把推理服务内网化；
+#   2) 提供 nvidia-smi 探针，验证驱动 / 容器运行时是否就绪。
+#
+# 只有在决定“自建 vLLM / Embedding 服务”时，才取消下面 vllm 段的注释；
+# 默认 profile 不启动任何 GPU 容器：
+#   docker network create bookmate-net            # 若 CPU 栈尚未创建
+#   docker compose -f deploy/compose/docker-compose.gpu.yml --profile probe up -d
+#   docker compose -f deploy/compose/docker-compose.gpu.yml --profile vllm up -d   # 可选
+name: bookmate-gpu
+
+services:
+  gpu-probe:
+    profiles: ["probe"]
+    image: nvidia/cuda:12.4.1-base-ubuntu22.04
+    command: ["nvidia-smi"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: "no"
+    networks: [bookmate-net]
+
+  # 未来自建推理时才启用；当前在线 API 模式请保持注释。
+  # vllm:
+  #   profiles: ["vllm"]
+  #   image: vllm/vllm-openai:v0.6.6
+  #   command: ["--model", "/models/Qwen2.5-7B-Instruct", "--served-model-name", "local-qwen", "--port", "8001"]
+  #   volumes:
+  #     - /data/models:/models:ro
+  #   environment:
+  #     HF_HOME: /models/.cache
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   networks: [bookmate-net]
+
+networks:
+  bookmate-net:
+    external: true

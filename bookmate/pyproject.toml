@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bookmate"
+version = "0.1.0"
+description = "墨舟 BookMate — 书籍推荐 / 解析 / 伴读智能客服系统"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "BookMate" }]
+dependencies = [
+  "fastapi~=0.115.0",
+  "uvicorn[standard]~=0.32.0",
+  "pydantic~=2.10",
+  "pydantic-settings~=2.6",
+  "sqlalchemy~=2.0.36",
+  "alembic~=1.14",
+  "aiomysql~=0.2.0",
+  "PyMySQL~=1.1",
+  "redis~=5.2",
+  "qdrant-client~=1.12",
+  "httpx~=0.27",
+  "jinja2~=3.1",
+  "python-multipart~=0.0.12",
+  "bcrypt~=4.2",
+  "PyJWT~=2.10",
+  "python-docx~=1.1",
+  "pypdf~=5.1",
+  "prometheus-client~=0.21",
+  "orjson~=3.10",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest~=8.3",
+  "pytest-asyncio~=0.24",
+  "pytest-cov~=6.0",
+  "ruff~=0.8",
+]
+eval = [
+  "ragas~=0.2.0",
+  "datasets~=3.0",
+  "langchain-openai~=0.3.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["web/static", "eval", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/workers/*", "tests/*"]

@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+
+{% block title %}伴读 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="companion-page" id="companion-root">
+  <header class="companion-head">
+    <nav class="breadcrumb" aria-label="面包屑">
+      <a href="/plans">导读计划</a><span>/</span><a id="crumb-plan" href="#">计划</a><span>/</span><span>伴读</span>
+    </nav>
+    <div class="companion-head-row">
+      <div>
+        <p class="eyebrow">READING COMPANION</p>
+        <h1 id="companion-title">伴读</h1>
+        <p class="muted" id="companion-sub">只讨论你已读到的章节，避免剧透。</p>
+      </div>
+      <div class="companion-actions">
+        <a class="btn btn-ghost" id="link-plan" href="#">回到计划</a>
+        <a class="btn btn-ghost" id="link-book" href="#">查看拆书</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="companion-layout">
+    <aside class="companion-side">
+      <section class="card today-card-side" id="companion-task">
+        <p class="eyebrow">当前任务</p>
+        <h2>—</h2>
+        <p class="muted small">加载中…</p>
+      </section>
+      <section class="card spoiler-card">
+        <h3>剧透保护</h3>
+        <p class="muted small">伴读只会检索你看过的章节。如果你想提前知道后面的内容，可以到客服页直接问，但那样可能影响阅读体验。</p>
+        <div class="spoiler-meter">
+          <span>已解锁至</span>
+          <strong id="spoiler-limit">第 1 章</strong>
+        </div>
+      </section>
+      <section class="card starter-card">
+        <h3>可以这样聊</h3>
+        <div class="starter-list" id="starter-list">
+          <div class="skeleton" style="height:36px"></div>
+          <div class="skeleton" style="height:36px"></div>
+        </div>
+      </section>
+    </aside>
+
+    <div class="companion-chat">
+      <div class="companion-thread" id="companion-thread" role="log" aria-live="polite">
+        <div class="chat-welcome small-welcome">
+          <div class="welcome-avatar">伴</div>
+          <h2>读到这里，有什么想问的？</h2>
+          <p>可以问我某句话的意思、某个人物的行为、和已读内容相关的问题，或说说你的感受。</p>
+        </div>
+      </div>
+      <form class="chat-input" id="companion-form">
+        <div class="chat-input-inner">
+          <textarea id="companion-text" rows="1" maxlength="2000" placeholder="告诉我你在读哪里、遇到什么问题…（Enter 发送）" aria-label="输入消息"></textarea>
+          <button class="btn btn-primary" type="submit" id="companion-send">发送</button>
+        </div>
+        <p class="chat-hint small muted">伴读默认每天自动开启一次开场；你随时可以继续追问。</p>
+      </form>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, requireLogin, escapeHtml, toast, formatDate, renderCitations } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const me = requireLogin();
+  const planId = Number(location.pathname.split("/").filter(Boolean).pop());
+  const thread = document.getElementById("companion-thread");
+  const form = document.getElementById("companion-form");
+  const input = document.getElementById("companion-text");
+  const sendBtn = document.getElementById("companion-send");
+  const state = { sessionId: null, plan: null, sending: false, limit: 1 };
+
+  const STARTERS = [
+    "今天读的这部分，核心观点是什么？",
+    "这句话为什么这么写？帮我拆一下。",
+    "我读的时候卡住了，你能换个说法解释吗？",
+    "这段和我之前读过的内容有什么联系？",
+    "读到这里，你觉得我应该记住什么？",
+  ];
+
+  function renderTask(plan, task) {
+    const box = document.getElementById("companion-task");
+    if (!task) {
+      box.innerHTML = `<p class="eyebrow">当前任务</p><h2>计划已全部读完</h2><p class="muted small">恭喜！你可以在计划页留下笔记或重新排一本书。</p>`;
+      return;
+    }
+    box.innerHTML = `
+      <p class="eyebrow">当前任务 · 第 ${task.day_no} 天</p>
+      <h2>第 ${task.chapter_from}-${task.chapter_to} 章</h2>
+      <p class="muted small">${escapeHtml(task.focus || "按计划继续阅读")}</p>
+      ${(task.questions || []).length ? `<ol class="task-questions">${task.questions.map((q) => `<li>${escapeHtml(typeof q === "string" ? q : q.text)}</li>`).join("")}</ol>` : ""}`;
+  }
+
+  function messageHtml(msg) {
+    const role = msg.role === "user" ? "user" : "assistant";
+    const refs = (msg.refs || []).map((r) => `<li><strong>${escapeHtml(r.book_title || "")}</strong>
+      ${r.chapter_title ? `第 ${r.chapter_no} 章 ${escapeHtml(r.chapter_title)}` : ""}
+      <span class="muted small">${escapeHtml(r.snippet || "")}</span></li>`).join("");
+    return `
+      <article class="msg msg-${role}">
+        <div class="msg-avatar">${role === "user" ? "你" : "伴"}</div>
+        <div class="msg-body">
+          <div class="msg-content">${role === "user" ? escapeHtml(msg.content).replace(/\n/g, "<br>") : renderCitations(msg.content || "")}</div>
+          ${refs ? `<details class="msg-cites"><summary>参考的原文</summary><ul class="ref-list">${refs}</ul></details>` : ""}
+          <div class="msg-foot">${msg.blocked ? `<span class="flag warn">为避免剧透，已保留</span>` : ""}<time>${formatDate(msg.created_at)}</time></div>
+        </div>
+      </article>`;
+  }
+
+  function append(msg) {
+    thread.querySelector(".chat-welcome")?.remove();
+    thread.insertAdjacentHTML("beforeend", messageHtml(msg));
+    thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" });
+  }
+
+  async function turn(text) {
+    if (state.sending) return;
+    state.sending = true;
+    sendBtn.disabled = true;
+    if (text) {
+      append({ role: "user", content: text, created_at: new Date().toISOString() });
+      input.value = "";
+      autoGrow();
+    }
+    const pending = document.createElement("article");
+    pending.className = "msg msg-assistant";
+    pending.id = "companion-pending";
+    pending.innerHTML = `<div class="msg-avatar">伴</div><div class="msg-body"><div class="msg-content typing"><span></span><span></span><span></span></div></div>`;
+    thread.appendChild(pending);
+    thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" });
+    try {
+      const res = await api.post(`/companion/plans/${planId}/turn`, text ? { message: text } : {});
+      pending.remove();
+      state.sessionId = res.session_id;
+      if (res.chapter_limit) {
+        state.limit = res.chapter_limit;
+        document.getElementById("spoiler-limit").textContent = `第 ${res.chapter_limit} 章`;
+      }
+      renderTask(state.plan, res.current_task);
+      append(res.message);
+      if (res.blocked) toast("这段涉及后续内容，留到当天再读更有意思", "warn");
+      if (res.degraded) toast("在线模型繁忙，伴读暂时给出简短提示", "warn");
+    } catch (err) {
+      pending.remove();
+      toast(err.message || "伴读暂时不可用", "bad");
+    } finally {
+      state.sending = false;
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+
+  form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (text) turn(text);
+  });
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  function autoGrow() {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+  }
+  input?.addEventListener("input", autoGrow);
+
+  async function boot() {
+    if (!me) return;
+    document.getElementById("starter-list").innerHTML =
+      STARTERS.map((q) => `<button class="starter" type="button">${escapeHtml(q)}</button>`).join("");
+    document.querySelectorAll(".starter").forEach((btn) => btn.addEventListener("click", () => turn(btn.textContent)));
+    try {
+      const plan = await api.get(`/plans/${planId}`);
+      state.plan = plan;
+      document.getElementById("companion-title").textContent = `和伴读一起读《${plan.book_title}》`;
+      document.getElementById("companion-sub").textContent = `第 ${plan.current_day} 天 · ${plan.daily_minutes} 分钟/天 · 已打卡 ${plan.completed_sessions}/${plan.days} 天`;
+      document.getElementById("crumb-plan").textContent = `《${plan.book_title}》`;
+      document.getElementById("crumb-plan").href = `/plans/${plan.id}`;
+      document.getElementById("link-plan").href = `/plans/${plan.id}`;
+      document.getElementById("link-book").href = `/books/${plan.book_id}`;
+      document.title = `伴读 · 《${plan.book_title}》`;
+      const today = (plan.sessions || []).find((s) => s.day_no === plan.current_day) || null;
+      state.limit = today?.chapter_to || 1;
+      document.getElementById("spoiler-limit").textContent = `第 ${state.limit} 章`;
+      renderTask(plan, today ? { ...today, day_no: today.day_no } : null);
+      await turn("");
+    } catch (err) {
+      thread.innerHTML = `<div class="alert error">计划加载失败：${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  boot();
+</script>
+{% endblock %}

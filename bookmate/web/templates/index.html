@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}{{ app_name }} · 按你的性格与目标选书{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-copy">
+    <p class="eyebrow">BOOKMATE · 智能阅读客服</p>
+    <h1>不用再纠结读什么，<br>也不用一个人硬撑。</h1>
+    <p class="lead">
+      用 3 分钟告诉我们你的性格与目标，墨舟会替你选书、拆书、排好每天读多少，
+      并在你读的过程中陪着你、记住你读到哪儿。
+    </p>
+    <div class="hero-actions">
+      <a class="btn btn-primary btn-lg" href="/onboarding" data-start>做性格与目标问卷</a>
+      <a class="btn btn-ghost btn-lg" href="/chat">先和客服聊聊</a>
+    </div>
+    <ul class="hero-points">
+      <li>按性格与目标推荐，不是热榜搬运</li>
+      <li>每本书有结构化解析与原文引用</li>
+      <li>7 / 14 / 30 天导读计划，防剧透伴读</li>
+      <li>阅读历史与笔记长期保存，下次接着聊</li>
+    </ul>
+    <div class="hero-proof" aria-label="服务数据">
+      <div><strong id="proof-books">—</strong><span>本可检索书目</span></div>
+      <div><strong id="proof-chunks">—</strong><span>条原文切片</span></div>
+      <div><strong>4</strong><span>业务域接入</span></div>
+    </div>
+  </div>
+  <aside class="hero-card" aria-label="服务状态">
+    <h2>服务状态</h2>
+    <dl class="status-list">
+      <div><dt>应用</dt><dd id="status-app">检查中…</dd></div>
+      <div><dt>数据库</dt><dd id="status-mysql">检查中…</dd></div>
+      <div><dt>缓存</dt><dd id="status-redis">检查中…</dd></div>
+      <div><dt>向量库</dt><dd id="status-qdrant">检查中…</dd></div>
+      <div><dt>在线模型</dt><dd id="status-llm">检查中…</dd></div>
+    </dl>
+    <p class="muted small">首次启动会自动导入书目并完成语料入库；所有模型调用走在线 API，本地不跑大模型。</p>
+    <div class="hero-mini">
+      <a href="/books">浏览全部书目 →</a>
+      <a href="/privacy">我们如何保护你的数据 →</a>
+    </div>
+  </aside>
+</section>
+
+<section class="features" aria-label="核心能力">
+  <article class="feature-card">
+    <span class="feature-icon" aria-hidden="true">选</span>
+    <h3>选得准</h3>
+    <p>五维性格画像 + 阅读目标 + 可投入时间，硬过滤已读与不喜欢，再给出可解释的推荐理由。</p>
+  </article>
+  <article class="feature-card">
+    <span class="feature-icon" aria-hidden="true">拆</span>
+    <h3>拆得开</h3>
+    <p>一句话主旨、章节地图、核心观点与金句，每条都带原文出处，方便回查。</p>
+  </article>
+  <article class="feature-card">
+    <span class="feature-icon" aria-hidden="true">陪</span>
+    <h3>陪得住</h3>
+    <p>按你的时间排计划，每天一个可完成的小目标；伴读只聊已读章节，不剧透。</p>
+  </article>
+  <article class="feature-card">
+    <span class="feature-icon" aria-hidden="true">记</span>
+    <h3>记得住</h3>
+    <p>阅读历史、笔记与偏好长期保存，下次开口就知道你读到哪儿、在意什么。</p>
+  </article>
+</section>
+
+<section class="how-it-works" aria-label="使用流程">
+  <div class="section-head">
+    <p class="eyebrow">HOW IT WORKS</p>
+    <h2>四步，把「想读」变成「读完」</h2>
+  </div>
+  <ol class="steps">
+    <li>
+      <span class="step-no">01</span>
+      <h3>聊 3 分钟</h3>
+      <p>12 道轻量问题，了解你的性格倾向、阅读目标与现实时间约束。</p>
+    </li>
+    <li>
+      <span class="step-no">02</span>
+      <h3>拿到书单</h3>
+      <p>推荐不是热榜：每条理由都能追溯到你的画像或书目标签，还可以点「不喜欢」纠正。</p>
+    </li>
+    <li>
+      <span class="step-no">03</span>
+      <h3>拆书 + 排计划</h3>
+      <p>先看结构化解析，再把书拆成 7/14/30 天，每天读多少、思考什么都写清楚。</p>
+    </li>
+    <li>
+      <span class="step-no">04</span>
+      <h3>读的时候有人陪</h3>
+      <p>打卡、提问、记笔记；伴读只围绕已读章节，不提前剧透后面的情节。</p>
+    </li>
+  </ol>
+</section>
+
+<section class="trust-band" aria-label="设计原则">
+  <div class="trust-copy">
+    <h2>不是另一个「AI 书单生成器」</h2>
+    <p>墨舟把「推荐—解析—导读—伴读—记忆」做成一条闭环：推荐有画像依据，解析有原文引用，伴读有章节边界，历史跨会话保留。</p>
+  </div>
+  <ul class="trust-list">
+    <li><strong>可追溯</strong><span>回答里每个事实都要有资料编号，引用可点回原章节。</span></li>
+    <li><strong>可纠正</strong><span>不喜欢、已读、跳过随时反馈，推荐会跟着变。</span></li>
+    <li><strong>有边界</strong><span>伴读严格限制在已读章节，防剧透是硬约束。</span></li>
+    <li><strong>可退出</strong><span>画像与记忆可查看、可删除，不拿隐私换推荐。</span></li>
+  </ul>
+</section>
+
+<section class="cta-band">
+  <div>
+    <h2>今天想读点什么？</h2>
+    <p>先做问卷，或者直接问客服「我最近很焦虑，适合读什么」。</p>
+  </div>
+  <div class="cta-actions">
+    <a class="btn btn-primary btn-lg" href="/onboarding">开始 3 分钟问卷</a>
+    <a class="btn btn-ghost btn-lg" href="/chat">直接问客服</a>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, loadStatus, currentUser } from "{{ url_for('static', path='/js/common.js') }}";
+  loadStatus();
+
+  const start = document.querySelector("[data-start]");
+  if (currentUser() && start) start.textContent = "更新我的阅读画像";
+
+  async function loadProof() {
+    try {
+      const [books, stats] = await Promise.all([
+        api.get("/books?page=1&page_size=1"),
+        fetch("/readyz").then((r) => r.json()).catch(() => ({})),
+      ]);
+      const booksEl = document.getElementById("proof-books");
+      if (booksEl) booksEl.textContent = books?.total ?? "—";
+      const chunksEl = document.getElementById("proof-chunks");
+      if (chunksEl && stats?.checks) chunksEl.textContent = "在线";
+    } catch {
+      /* 首页数据失败不阻断 */
+    }
+  }
+  loadProof();
+</script>
+{% endblock %}

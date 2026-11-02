@@ -1,0 +1,21 @@
+# 操作系统 / 编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 本地 Claude 配置（可能含令牌，禁止上传）
+.claude/
+
+# 部署包、临时压缩包与误建目录
+*.tar.gz
+*.zip
+bookmate;C/
+
+# 环境变量与密钥（子项目内还有一份，双保险）
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example

@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}注册 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="auth-layout">
+  <div class="auth-copy">
+    <p class="eyebrow">START HERE</p>
+    <h1>先认识你，<br>再推荐书。</h1>
+    <p class="lead">注册只要邮箱和密码。完成后做 12 道轻量问卷，墨舟就能按你的性格、目标和时间给出第一份书单。</p>
+    <div class="mini-profile" aria-hidden="true">
+      <div class="mini-avatar">墨</div>
+      <div>
+        <strong>你的阅读画像</strong>
+        <p class="muted small">开放探索 · 情绪疗愈 · 每天 20 分钟</p>
+      </div>
+    </div>
+    <ul class="auth-points">
+      <li>不采集手机号、住址等敏感信息</li>
+      <li>阅读数据只用于推荐与伴读</li>
+      <li>随时可导出或删除画像</li>
+    </ul>
+    <p class="muted small">已有账号？<a href="/login">直接登录</a></p>
+  </div>
+
+  <div class="auth-card">
+    <h2>创建账号</h2>
+    <p class="muted small">注册即表示你已阅读 <a href="/privacy">隐私说明</a>。</p>
+    <div id="register-alert"></div>
+    <form id="register-form" novalidate>
+      <div class="field">
+        <label for="nickname">怎么称呼你</label>
+        <input class="input" id="nickname" name="nickname" maxlength="32" placeholder="书友" autocomplete="nickname">
+        <span class="field-error" data-error-for="nickname"></span>
+      </div>
+      <div class="field">
+        <label for="email">邮箱</label>
+        <input class="input" id="email" name="email" type="email" autocomplete="email" required placeholder="you@example.com">
+        <span class="field-error" data-error-for="email"></span>
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <div class="input-with-action">
+          <input class="input" id="password" name="password" type="password" autocomplete="new-password" required placeholder="至少 8 位，同时包含字母与数字">
+          <button class="btn btn-ghost btn-sm" type="button" data-toggle-password aria-label="显示密码">显示</button>
+        </div>
+        <span class="hint">避免使用生日、手机号或常用弱密码。</span>
+        <span class="field-error" data-error-for="password"></span>
+      </div>
+      <div class="field">
+        <label for="password2">再输入一次密码</label>
+        <input class="input" id="password2" name="password2" type="password" autocomplete="new-password" required>
+        <span class="field-error" data-error-for="password2"></span>
+      </div>
+      <label class="inline-check consent-row">
+        <input type="checkbox" id="consent" name="consent" required>
+        <span>我同意将阅读画像用于个性化推荐，并已阅读隐私说明（可随时撤回）。</span>
+      </label>
+      <span class="field-error" data-error-for="consent"></span>
+      <button class="btn btn-primary btn-block" type="submit" id="register-submit">创建账号</button>
+    </form>
+    <p class="muted small auth-note">注册后会自动登录，并带你去做问卷。</p>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, setToken, setUser, toast, showAlert, setBusy } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const form = document.getElementById("register-form");
+  const alertBox = document.getElementById("register-alert");
+  const submit = document.getElementById("register-submit");
+
+  document.querySelector("[data-toggle-password]")?.addEventListener("click", (event) => {
+    const input = document.getElementById("password");
+    const shown = input.type === "text";
+    input.type = shown ? "password" : "text";
+    event.currentTarget.textContent = shown ? "显示" : "隐藏";
+  });
+
+  function fieldError(name, message) {
+    const el = document.querySelector(`[data-error-for="${name}"]`);
+    if (el) el.textContent = message || "";
+  }
+
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    showAlert(alertBox, "");
+    ["nickname", "email", "password", "password2", "consent"].forEach((name) => fieldError(name, ""));
+    const nickname = form.nickname.value.trim() || "书友";
+    const email = form.email.value.trim();
+    const password = form.password.value;
+    const password2 = form.password2.value;
+    const consent = form.consent.checked;
+    let valid = true;
+    if (!email.includes("@")) { fieldError("email", "请输入有效邮箱"); valid = false; }
+    if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+      fieldError("password", "至少 8 位，同时包含字母与数字"); valid = false;
+    }
+    if (password !== password2) { fieldError("password2", "两次输入的密码不一致"); valid = false; }
+    if (!consent) { fieldError("consent", "请先同意隐私说明"); valid = false; }
+    if (!valid) return;
+
+    setBusy(submit, true, "创建中…");
+    try {
+      const res = await api.post("/auth/register", { email, password, nickname, consent });
+      setToken(res.access_token);
+      setUser({ email, nickname, id: res.user_id, role: "user" });
+      toast("账号创建成功", "ok");
+      location.assign("/onboarding");
+    } catch (err) {
+      showAlert(alertBox, err.message || "注册失败，请稍后重试");
+      if (err.fields) {
+        Object.entries(err.fields).forEach(([key, value]) => fieldError(key, String(value)));
+      }
+    } finally {
+      setBusy(submit, false);
+    }
+  });
+</script>
+{% endblock %}

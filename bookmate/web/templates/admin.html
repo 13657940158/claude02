@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+
+{% block title %}管理后台 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="admin-page" id="admin-root">
+  <header class="page-head">
+    <div>
+      <p class="eyebrow">OPERATIONS</p>
+      <h1>管理后台</h1>
+      <p>运营概览、用户、工具调用、业务域、安全事件与只读配置。所有接口仅管理员可访问，配置视图不包含任何密钥。</p>
+    </div>
+    <div class="page-actions">
+      <a class="btn btn-ghost" href="/admin/eval">评测中心</a>
+      <button class="btn btn-ghost" type="button" id="refresh-admin">刷新</button>
+    </div>
+  </header>
+
+  <div id="admin-alert"></div>
+
+  <div class="admin-tabs" role="tablist" aria-label="后台模块">
+    <button class="tab active" type="button" data-admin-tab="overview" role="tab" aria-selected="true">概览</button>
+    <button class="tab" type="button" data-admin-tab="users" role="tab" aria-selected="false">用户</button>
+    <button class="tab" type="button" data-admin-tab="ingest" role="tab" aria-selected="false">入库任务</button>
+    <button class="tab" type="button" data-admin-tab="calls" role="tab" aria-selected="false">工具与业务域</button>
+    <button class="tab" type="button" data-admin-tab="security" role="tab" aria-selected="false">安全与审计</button>
+    <button class="tab" type="button" data-admin-tab="config" role="tab" aria-selected="false">配置</button>
+  </div>
+
+  <div id="admin-panel" class="admin-panel">
+    <div class="skeleton" style="height:240px"></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, requireLogin, isAdmin, escapeHtml, showAlert, formatDate, relTime, setBusy, toast } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const me = requireLogin();
+  const panel = document.getElementById("admin-panel");
+  const alertBox = document.getElementById("admin-alert");
+  const tabs = document.querySelectorAll("[data-admin-tab]");
+  const loaded = {};
+
+  const METRIC_LABELS = {
+    faithfulness: "忠实度", answer_relevancy: "答案相关性",
+    context_precision: "上下文精确率", context_recall: "上下文召回率", overall: "综合分",
+  };
+
+  function metric(value) {
+    if (value === null || value === undefined) return `<span class="muted">—</span>`;
+    const pct = Math.round(Number(value) * 1000) / 10;
+    return `<span class="metric ${value >= 0.6 ? "ok" : value >= 0.4 ? "warn" : "bad"}">${pct}%</span>`;
+  }
+
+  function table(headers, rows) {
+    return `<div class="table-wrap"><table class="data-table">
+      <thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
+      <tbody>${rows.length ? rows.map((cells) => `<tr>${cells.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")
+        : `<tr><td colspan="${headers.length}" class="muted center">暂无数据</td></tr>`}</tbody>
+    </table></div>`;
+  }
+
+  /* ---------- 概览 ---------- */
+  async function renderOverview() {
+    const data = await api.get("/admin/overview");
+    const sections = [
+      { key: "users", title: "用户", labels: { total: "总用户", active: "正常", admins: "管理员" } },
+      { key: "books", title: "书库", labels: { total: "书目", published: "已上架", chapters: "章节", chunks: "切片", analyses_ready: "解析就绪" } },
+      { key: "chat", title: "客服", labels: { sessions: "会话", messages: "消息", tool_calls: "工具调用", tool_errors: "工具错误" } },
+      { key: "reading", title: "阅读", labels: { plans: "计划", active_plans: "进行中", checkins: "打卡", notes: "笔记", progress: "进度记录" } },
+      { key: "personalization", title: "个性化", labels: { profiles: "画像", recommendations: "推荐", feedbacks: "反馈", memories: "记忆" } },
+      { key: "eval", title: "评测", labels: { runs: "运行", cases: "用例", adjustments_pending: "待采纳建议" } },
+    ];
+    const evalInfo = data.eval?.latest;
+    panel.innerHTML = `
+      <div class="overview-grid">
+        ${sections.map((s) => `
+          <article class="card overview-card">
+            <h2>${s.title}</h2>
+            <div class="overview-stats">
+              ${Object.entries(s.labels).map(([key, label]) => `
+                <div><strong>${data[s.key]?.[key] ?? "—"}</strong><span>${label}</span></div>`).join("")}
+            </div>
+          </article>`).join("")}
+        <article class="card overview-card">
+          <h2>启动自检</h2>
+          ${data.bootstrap ? `<p class="small">状态：<strong>${escapeHtml(data.bootstrap.status)}</strong> · 触发：${escapeHtml(data.bootstrap.trigger || "—")}</p>
+            <p class="small">入库书籍 ${data.bootstrap.books_ingested ?? 0} 本，切片 ${data.bootstrap.chunks_created ?? 0} 段</p>
+            <p class="small muted">完成于 ${relTime(data.bootstrap.finished_at)}</p>`
+            : `<p class="muted small">还没有启动自检记录。</p>`}
+          <p class="small">安全事件：<strong>${data.security_events ?? 0}</strong></p>
+        </article>
+      </div>
+      ${evalInfo ? `<article class="card eval-teaser">
+        <div class="panel-head"><h2>最近一次评测</h2><a class="btn btn-ghost btn-sm" href="/admin/eval">查看详情</a></div>
+        <p class="small">${escapeHtml(evalInfo.run_name)} · 状态 <strong>${escapeHtml(evalInfo.status)}</strong> · ${relTime(evalInfo.finished_at)}</p>
+        <div class="metric-row">${Object.entries(METRIC_LABELS).filter(([k]) => k !== "overall").map(([k, label]) =>
+          `<span class="metric-chip">${label} ${metric(evalInfo.metrics?.[k])}</span>`).join("")}</div>
+      </article>` : ""}`;
+  }
+
+  /* ---------- 用户 ---------- */
+  async function renderUsers() {
+    const rows = await api.get("/admin/users?limit=100");
+    panel.innerHTML = `
+      <div class="panel-head"><h2>用户列表</h2><span class="muted small">共显示 ${rows.length} 位（最近注册优先）</span></div>
+      ${table(["ID", "邮箱", "昵称", "角色", "状态", "登录次数", "最近登录", "注册时间"], rows.map((u) => [
+        String(u.id), escapeHtml(u.email), escapeHtml(u.nickname || ""),
+        u.role === "admin" ? `<span class="tag tag-warn">管理员</span>` : "读者",
+        escapeHtml(u.status || ""), String(u.login_count ?? 0),
+        u.last_login_at ? relTime(u.last_login_at) : "—", formatDate(u.created_at) || "—",
+      ]))}`;
+  }
+
+  /* ---------- 入库任务 ---------- */
+  async function renderIngest() {
+    const rows = await api.get("/admin/ingest/tasks?limit=100");
+    panel.innerHTML = `
+      <article class="card ingest-upload">
+        <div class="panel-head">
+          <h2>导入书籍</h2>
+          <span class="muted small">PDF / Markdown / TXT，单本 ≤ 20MB</span>
+        </div>
+        <form id="ingest-upload-form">
+          <div class="form-row">
+            <div class="field" style="flex:1;min-width:260px;margin-bottom:0">
+              <label for="ingest-file">选择文件</label>
+              <input class="input" id="ingest-file" type="file" name="file"
+                     accept=".pdf,.md,.txt,application/pdf,text/markdown,text/plain" required>
+              <span class="hint">文件名建议「书名-作者.pdf/txt/md」；扫描版 PDF 需先 OCR。</span>
+            </div>
+            <label class="inline-check"><input type="checkbox" name="force"> 覆盖同名</label>
+            <button class="btn btn-primary" type="submit">上传并入库</button>
+          </div>
+          <p id="ingest-upload-status" class="small muted" role="status"></p>
+        </form>
+      </article>
+
+      <div class="panel-head"><h2>入库任务</h2><span class="muted small">原文 → 章节 → 切片 → 向量与全文索引</span></div>
+      ${table(["ID", "书籍", "来源文件", "状态", "阶段", "切片进度", "耗时", "错误"], rows.map((t) => [
+        String(t.id), String(t.book_id ?? "—"), escapeHtml(t.source_file || "—"),
+        `<span class="status-pill status-${escapeHtml(t.status)}">${escapeHtml(t.status || "")}</span>`,
+        escapeHtml(t.stage || "—"),
+        `${t.done_chunks ?? 0}/${t.total_chunks ?? 0}`,
+        t.started_at ? relTime(t.finished_at || t.started_at) : "—",
+        t.error ? `<span class="text-bad" title="${escapeHtml(t.error)}">${escapeHtml(t.error.slice(0, 40))}</span>` : "—",
+      ]))}`;
+
+    const form = document.getElementById("ingest-upload-form");
+    const status = document.getElementById("ingest-upload-status");
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const file = form.querySelector('input[type="file"]')?.files?.[0];
+      if (!file) {
+        status.textContent = "请先选择文件";
+        return;
+      }
+      const force = form.querySelector('[name="force"]').checked;
+      const button = form.querySelector('button[type="submit"]');
+      setBusy(button, true, "入库中…");
+      status.textContent = "正在上传、切片并向量化，可能需要 1–3 分钟，请不要关闭页面…";
+      try {
+        const body = new FormData();
+        body.append("file", file);
+        const report = await api.post(`/rag/ingest/upload?force=${force ? "true" : "false"}`, body);
+        const title = report.book_title || report.source_file || file.name;
+        status.innerHTML = `已入库《${escapeHtml(title)}》：${report.chunks_total ?? 0} 段切片，新增 ${report.chunks_new ?? 0} 段。`;
+        toast("导入完成", "ok");
+        setTimeout(() => { renderIngest().catch(() => {}); }, 1500);
+      } catch (err) {
+        status.textContent = err.message || "导入失败";
+        showAlert(alertBox, err.message || "导入失败");
+      } finally {
+        setBusy(button, false);
+      }
+    });
+  }
+
+  /* ---------- 工具与业务域 ---------- */
+  async function renderCalls() {
+    let toolCalls = [];
+    let domainCalls = [];
+    try {
+      [toolCalls, domainCalls] = await Promise.all([
+        api.get("/chat/tool-calls?limit=100").catch(() => []),
+        api.get("/admin/domain-calls?limit=100"),
+      ]);
+    } catch { /* 单接口失败不阻断 */ }
+    panel.innerHTML = `
+      <div class="panel-head"><h2>客服工具调用</h2><span class="muted small">检索原文 / 推荐 / 解析 / 进度等</span></div>
+      ${table(["ID", "会话", "工具", "状态", "耗时", "结果大小", "错误", "时间"], (toolCalls || []).map((c) => [
+        String(c.id), String(c.session_id ?? "—"), `<span class="tag">${escapeHtml(c.tool || "")}</span>`,
+        `<span class="status-pill status-${escapeHtml(c.status)}">${escapeHtml(c.status || "")}</span>`,
+        c.latency_ms != null ? `${c.latency_ms} ms` : "—",
+        c.result_size != null ? `${c.result_size} B` : "—",
+        c.error ? `<span class="text-bad" title="${escapeHtml(c.error)}">${escapeHtml(c.error.slice(0, 30))}</span>` : "—",
+        relTime(c.created_at),
+      ]))}
+      <div class="panel-head mt-24"><h2>业务域调用</h2><span class="muted small">听书 / 教育 / 文旅 / 金融</span></div>
+      ${table(["ID", "业务域", "查询", "状态", "耗时", "摘要", "时间"], (domainCalls || []).map((c) => [
+        String(c.id), `<span class="tag">${escapeHtml(c.domain)}</span>`, escapeHtml(c.query || ""),
+        `<span class="status-pill status-${escapeHtml(c.status)}">${escapeHtml(c.status || "")}</span>`,
+        c.latency_ms != null ? `${c.latency_ms} ms` : "—",
+        escapeHtml((c.response_summary || "").slice(0, 80)),
+        relTime(c.created_at),
+      ]))}
+      <p class="muted small">业务域失败会自动降级返回本地资料，保证客服仍能回答；失败原因写入调用记录。</p>`;
+  }
+
+  /* ---------- 安全与审计 ---------- */
+  async function renderSecurity() {
+    const [events, audits] = await Promise.all([
+      api.get("/admin/security-events?limit=100"),
+      api.get("/admin/audit-logs?limit=100"),
+    ]);
+    panel.innerHTML = `
+      <div class="panel-head"><h2>安全事件</h2><span class="muted small">异常登录、限流、越权访问</span></div>
+      ${table(["ID", "类型", "级别", "用户", "IP", "详情", "时间"], events.map((e) => [
+        String(e.id), escapeHtml(e.kind || ""),
+        `<span class="severity severity-${escapeHtml(e.severity || "info")}">${escapeHtml(e.severity || "info")}</span>`,
+        String(e.user_id ?? "—"), escapeHtml(e.ip || "—"),
+        escapeHtml((e.detail || "").slice(0, 80)), relTime(e.created_at),
+      ]))}
+
+      <div class="panel-head mt-24"><h2>审计日志</h2><span class="muted small">管理操作留痕</span></div>
+      ${table(["ID", "操作者", "动作", "对象", "备注", "IP", "时间"], audits.map((a) => [
+        String(a.id), String(a.user_id ?? "—"), escapeHtml(a.action || ""),
+        `${escapeHtml(a.object_type || "")}${a.object_id ? ` #${a.object_id}` : ""}`,
+        escapeHtml((a.note || "").slice(0, 60)), escapeHtml(a.ip || "—"), relTime(a.created_at),
+      ]))}`;
+  }
+
+  /* ---------- 配置 ---------- */
+  async function renderConfig() {
+    const [config, prompts] = await Promise.all([
+      api.get("/admin/config"),
+      api.get("/admin/prompts"),
+    ]);
+    const rows = Object.entries(config).map(([key, value]) => [
+      `<code>${escapeHtml(key)}</code>`,
+      typeof value === "boolean" ? (value ? `<span class="tag">true</span>` : `<span class="tag tag-dim">false</span>`) : escapeHtml(String(value)),
+    ]);
+    panel.innerHTML = `
+      <div class="panel-head"><h2>运行配置（只读）</h2><span class="muted small">不含密钥、连接串与任何凭证</span></div>
+      ${table(["配置项", "值"], rows)}
+      <div class="panel-head mt-24"><h2>提示词版本</h2><span class="muted small">评测通过后可作为线上版本</span></div>
+      ${table(["ID", "名称", "版本", "说明", "启用", "评测分", "创建时间"], (prompts || []).map((p) => [
+        String(p.id), escapeHtml(p.name), `<code>${escapeHtml(p.version)}</code>`, escapeHtml(p.description || ""),
+        p.active ? `<span class="tag">启用</span>` : `<span class="tag tag-dim">未启用</span>`,
+        p.eval_score != null ? `${Math.round(p.eval_score * 1000) / 10}%` : "—",
+        formatDate(p.created_at) || "—",
+      ]))}
+      <article class="card config-note">
+        <h3>关于在线模型</h3>
+        <p class="muted small">大模型、向量与重排全部通过在线 API 调用；本服务不在本地加载模型权重。CPU 容器承载 Web/检索/编排，GPU 容器只在需要本地推理的量产方案中启用，本项目默认不启动 GPU 推理。</p>
+      </article>`;
+  }
+
+  const renderers = { overview: renderOverview, users: renderUsers, ingest: renderIngest, calls: renderCalls, security: renderSecurity, config: renderConfig };
+
+  async function activate(name) {
+    tabs.forEach((tab) => {
+      const active = tab.dataset.adminTab === name;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
+    });
+    showAlert(alertBox, "");
+    panel.innerHTML = `<div class="skeleton" style="height:240px"></div>`;
+    try {
+      await renderers[name]();
+      loaded[name] = true;
+    } catch (err) {
+      panel.innerHTML = "";
+      showAlert(alertBox, err.message || "后台数据加载失败");
+    }
+  }
+
+  tabs.forEach((tab) => tab.addEventListener("click", () => activate(tab.dataset.adminTab)));
+  document.getElementById("refresh-admin")?.addEventListener("click", () => {
+    const active = document.querySelector("[data-admin-tab].active")?.dataset.adminTab || "overview";
+    activate(active);
+    toast("已刷新", "ok");
+  });
+
+  if (me && isAdmin()) activate("overview");
+  else if (me) {
+    panel.innerHTML = `<div class="empty-state"><h1>没有访问权限</h1>
+      <p class="muted">管理后台仅对管理员开放。如果你认为这是误判，请联系项目维护者。</p>
+      <a class="btn btn-primary" href="/">回到首页</a></div>`;
+  }
+</script>
+{% endblock %}

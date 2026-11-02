@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block title %}导读计划 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="plans-page">
+  <header class="page-head">
+    <div>
+      <p class="eyebrow">GUIDED READING</p>
+      <h1>导读计划</h1>
+      <p>把一本书拆成每天读得完的小任务。打卡会同步进度、连续天数与阅读历史，伴读会根据你读到第几天控制剧透。</p>
+    </div>
+    <div class="page-actions">
+      <a class="btn btn-primary" href="/plans/new">新建导读计划</a>
+      <a class="btn btn-ghost" href="/progress">阅读进度</a>
+    </div>
+  </header>
+
+  <div id="plans-alert"></div>
+
+  <section class="stat-strip" id="plan-stats" aria-label="阅读统计">
+    <div class="stat"><strong id="stat-active">—</strong><span>进行中</span></div>
+    <div class="stat"><strong id="stat-completed">—</strong><span>已完成计划</span></div>
+    <div class="stat"><strong id="stat-streak">—</strong><span>连续阅读（天）</span></div>
+    <div class="stat"><strong id="stat-minutes">—</strong><span>累计阅读（分钟）</span></div>
+  </section>
+
+  <div class="filter-bar plan-filter">
+    <div class="tabs-inline" id="plan-tabs">
+      <button class="chip chip-btn active" type="button" data-status="active">进行中</button>
+      <button class="chip chip-btn" type="button" data-status="completed">已完成</button>
+      <button class="chip chip-btn" type="button" data-status="">全部</button>
+    </div>
+    <span class="muted small" id="plan-count"></span>
+  </div>
+
+  <div id="plan-list" class="plan-list" aria-live="polite">
+    <div class="skeleton" style="height:190px"></div>
+    <div class="skeleton" style="height:190px"></div>
+  </div>
+
+  <section class="plans-help">
+    <h2>关于导读计划</h2>
+    <div class="grid-3">
+      <article class="card">
+        <h3>怎么排出来的？</h3>
+        <p>按章节顺序与阅读时长切分，每天给出阅读范围、专注点与思考题。在线模型不可用时会自动退化为按字数均分，计划仍然可用。</p>
+      </article>
+      <article class="card">
+        <h3>打卡会记录什么？</h3>
+        <p>记录实际阅读分钟数，更新当前读到第几天、整本书进度、连续阅读天数，并写入阅读历史。</p>
+      </article>
+      <article class="card">
+        <h3>伴读会剧透吗？</h3>
+        <p>伴读默认只检索你当前进度之前的章节，并提示后面的内容留到当天再读。你可以随时和它讨论已读部分。</p>
+      </article>
+    </div>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, requireLogin, escapeHtml, showAlert, formatDate, relTime } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const me = requireLogin();
+  const list = document.getElementById("plan-list");
+  const alertBox = document.getElementById("plans-alert");
+  const tabs = document.getElementById("plan-tabs");
+  const countEl = document.getElementById("plan-count");
+  const state = { status: "active", plans: [] };
+
+  function planCard(plan, index) {
+    const pct = Math.max(0, Math.min(100, Number(plan.progress_percent || 0)));
+    const done = plan.completed_sessions || 0;
+    const days = plan.days || 0;
+    const statusText = { active: "进行中", completed: "已完成", paused: "已暂停" }[plan.status] || plan.status;
+    return `
+      <article class="plan-card status-${escapeHtml(plan.status)}" style="--stagger:${index * 45}ms">
+        <div class="plan-cover">
+          <span>${String(done).padStart(2, "0")}</span>
+          <small>/ ${days} 天</small>
+        </div>
+        <div class="plan-body">
+          <div class="plan-top">
+            <div>
+              <h2><a href="/plans/${plan.id}">《${escapeHtml(plan.book_title || "未命名")}》</a></h2>
+              <p class="book-meta">${escapeHtml(plan.author || "")} · ${plan.daily_minutes || 30} 分钟/天 · 共 ${days} 天</p>
+            </div>
+            <span class="status-pill status-${escapeHtml(plan.status)}">${statusText}</span>
+          </div>
+          <p class="plan-summary">${escapeHtml(plan.summary || "")}</p>
+          <div class="plan-progress-row">
+            <div class="progress"><span style="width:${pct}%"></span></div>
+            <strong>${pct}%</strong>
+          </div>
+          <div class="plan-meta-row">
+            <span>当前第 ${plan.current_day || 1} 天</span>
+            <span>开始 ${formatDate(plan.start_date) || "—"}</span>
+            <span>${plan.degraded ? "规则生成（降级）" : "模型生成"}</span>
+            ${plan.created_at ? `<span class="muted">创建于 ${relTime(plan.created_at)}</span>` : ""}
+          </div>
+          <div class="plan-actions">
+            <a class="btn btn-primary btn-sm" href="/plans/${plan.id}">继续阅读</a>
+            <a class="btn btn-ghost btn-sm" href="/companion/${plan.id}">和伴读聊聊</a>
+            <a class="btn btn-ghost btn-sm" href="/books/${plan.book_id}">查看拆书</a>
+          </div>
+        </div>
+      </article>`;
+  }
+
+  async function loadStats() {
+    try {
+      const stats = await api.get("/stats");
+      document.getElementById("stat-active").textContent = stats.active_plans ?? 0;
+      document.getElementById("stat-completed").textContent = stats.completed_plans ?? 0;
+      document.getElementById("stat-streak").textContent = stats.streak_days ?? 0;
+      document.getElementById("stat-minutes").textContent = stats.total_minutes ?? 0;
+    } catch {
+      /* 统计失败不阻断列表 */
+    }
+  }
+
+  async function load() {
+    showAlert(alertBox, "");
+    list.innerHTML = `<div class="skeleton" style="height:190px"></div><div class="skeleton" style="height:190px"></div>`;
+    const params = new URLSearchParams({ limit: "50" });
+    if (state.status) params.set("status", state.status);
+    try {
+      const rows = await api.get(`/plans?${params}`);
+      state.plans = rows || [];
+      countEl.textContent = `${state.plans.length} 个计划`;
+      if (!state.plans.length) {
+        const empty = state.status === "completed"
+          ? { title: "还没有完成的计划", text: "完成第一本之后，这里会留下你的阅读记录。", action: `<a class="btn btn-primary" href="/plans">回到进行中</a>` }
+          : { title: "还没有导读计划", text: "从书架挑一本书，或让我们按你的画像推荐一本，然后拆成每天能读完的小任务。", action: `<a class="btn btn-primary" href="/plans/new">新建导读计划</a><a class="btn btn-ghost" href="/recommend">看推荐书单</a>` };
+        list.innerHTML = `<div class="empty-state">
+          <h2>${empty.title}</h2><p class="muted">${empty.text}</p><div class="row-actions">${empty.action}</div>
+        </div>`;
+        return;
+      }
+      list.innerHTML = state.plans.map(planCard).join("");
+    } catch (err) {
+      list.innerHTML = "";
+      showAlert(alertBox, err.message || "计划加载失败");
+    }
+  }
+
+  tabs?.querySelectorAll("[data-status]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.status = btn.dataset.status;
+      tabs.querySelectorAll("[data-status]").forEach((el) => el.classList.toggle("active", el === btn));
+      load();
+    });
+  });
+
+  if (me) {
+    loadStats();
+    load();
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,304 @@
+{% extends "base.html" %}
+
+{% block title %}性格与目标问卷 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="onboarding" id="onboarding" data-state="loading">
+  <header class="page-head onboarding-head">
+    <div>
+      <p class="eyebrow">READING PROFILE</p>
+      <h1>先认识你，再推荐书</h1>
+      <p>共 12 题，约 3 分钟。我们不评价你，只想知道什么书更适合你、你每天能挤出多少时间。</p>
+    </div>
+    <div class="onboarding-progress" aria-live="polite">
+      <span id="step-label">加载中…</span>
+      <div class="progress"><span id="progress-bar" style="width:0%"></span></div>
+    </div>
+  </header>
+
+  <div id="onboarding-alert"></div>
+
+  <div class="onboarding-body" id="onboarding-body">
+    <div class="skeleton" style="height:220px"></div>
+    <div class="skeleton" style="height:180px;margin-top:16px"></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, requireLogin, toast, escapeHtml, setBusy, showAlert } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const DIM_LABELS = {
+    openness: "开放探索",
+    conscientiousness: "自律条理",
+    extraversion: "外向社交",
+    agreeableness: "共情随和",
+    neuroticism: "情绪敏感",
+  };
+  const LEVEL_LABELS = { beginner: "入门", intermediate: "进阶", advanced: "高阶" };
+  const INTEREST_SUGGESTIONS = ["文学小说", "心理学", "历史人文", "哲学思辨", "职场成长", "生活方式", "科学科普", "古典诗词"];
+
+  const me = requireLogin();
+  const body = document.getElementById("onboarding-body");
+  const alertBox = document.getElementById("onboarding-alert");
+  const stepLabel = document.getElementById("step-label");
+  const progressBar = document.getElementById("progress-bar");
+
+  const state = {
+    data: null,
+    step: 0, // 0..11 题目；12 目标/兴趣/时间
+    answers: {}, // question_id -> option_key
+    goal: "growth",
+    interests: [],
+    level: "beginner",
+    daily_minutes: 30,
+    result: null,
+  };
+
+  function totalSteps() {
+    return (state.data?.questions?.length || 12) + 1;
+  }
+
+  function setProgress() {
+    const total = totalSteps();
+    const pct = Math.round((state.step / total) * 100);
+    progressBar.style.width = `${pct}%`;
+    stepLabel.textContent = state.step >= total - 1
+      ? `最后一步 · 目标与时间`
+      : `第 ${state.step + 1} / ${total} 步`;
+  }
+
+  function renderQuestion() {
+    const questions = state.data.questions;
+    const q = questions[state.step];
+    if (!q) return renderGoalStep();
+    const chosen = state.answers[q.id];
+    body.innerHTML = `
+      <article class="quiz-card">
+        <p class="quiz-index">问题 ${state.step + 1} / ${questions.length}</p>
+        <h2 class="quiz-title">${escapeHtml(q.text)}</h2>
+        <p class="quiz-hint">${escapeHtml(q.hint || "")}</p>
+        <div class="quiz-options" role="radiogroup" aria-label="${escapeHtml(q.text)}">
+          ${q.options.map((opt) => `
+            <label class="quiz-option ${chosen === opt.key ? "selected" : ""}">
+              <input type="radio" name="q-${q.id}" value="${opt.key}" ${chosen === opt.key ? "checked" : ""}>
+              <span class="quiz-key">${escapeHtml(opt.key.toUpperCase())}</span>
+              <span class="quiz-text">${escapeHtml(opt.text)}</span>
+            </label>`).join("")}
+        </div>
+        <div class="quiz-nav">
+          <button class="btn btn-ghost" type="button" data-prev ${state.step === 0 ? "disabled" : ""}>上一题</button>
+          <button class="btn btn-primary" type="button" data-next ${chosen ? "" : "disabled"}>
+            ${state.step === questions.length - 1 ? "下一步：目标与时间" : "下一题"}
+          </button>
+        </div>
+        <p class="muted small quiz-skip"><button class="linklike" type="button" data-skip>这题不太确定，跳过</button></p>
+      </article>`;
+
+    body.querySelectorAll("input[type=radio]").forEach((input) => {
+      input.addEventListener("change", () => {
+        state.answers[q.id] = input.value;
+        body.querySelectorAll(".quiz-option").forEach((el) => el.classList.toggle("selected", el.contains(input) && input.checked || el.querySelector("input").checked));
+        body.querySelector("[data-next]").disabled = false;
+        if (window.matchMedia("(min-width: 720px)").matches) {
+          setTimeout(goNext, 160);
+        }
+      });
+    });
+    body.querySelector("[data-next]")?.addEventListener("click", goNext);
+    body.querySelector("[data-prev]")?.addEventListener("click", goPrev);
+    body.querySelector("[data-skip]")?.addEventListener("click", goNext);
+    setProgress();
+  }
+
+  function renderGoalStep() {
+    const goals = state.data.goals;
+    const levels = state.data.levels;
+    body.innerHTML = `
+      <article class="quiz-card quiz-goal">
+        <p class="quiz-index">最后一步</p>
+        <h2 class="quiz-title">当下最想解决的问题是什么？</h2>
+        <p class="quiz-hint">推荐、导读与伴读都会围绕这个目标展开，之后可以随时修改。</p>
+        <div class="quiz-options goal-options" role="radiogroup">
+          ${goals.map((goal) => `
+            <label class="quiz-option ${state.goal === goal.key ? "selected" : ""}">
+              <input type="radio" name="goal" value="${goal.key}" ${state.goal === goal.key ? "checked" : ""}>
+              <span class="quiz-text">${escapeHtml(goal.label)}</span>
+            </label>`).join("")}
+        </div>
+
+        <h3 class="quiz-sub">感兴趣的主题（可多选）</h3>
+        <div class="checkbox-row" id="interests">
+          ${INTEREST_SUGGESTIONS.map((name) => `
+            <label class="chip"><input type="checkbox" value="${escapeHtml(name)}" ${state.interests.includes(name) ? "checked" : ""}>
+              ${escapeHtml(name)}</label>`).join("")}
+        </div>
+
+        <h3 class="quiz-sub">阅读水平</h3>
+        <div class="quiz-options level-options" role="radiogroup">
+          ${levels.map((level) => `
+            <label class="quiz-option ${state.level === level.key ? "selected" : ""}">
+              <input type="radio" name="level" value="${level.key}" ${state.level === level.key ? "checked" : ""}>
+              <span class="quiz-text">${escapeHtml(level.label)}</span>
+            </label>`).join("")}
+        </div>
+
+        <h3 class="quiz-sub">每天大概能读多久？</h3>
+        <div class="range-row">
+          <input type="range" id="minutes" min="10" max="120" step="5" value="${state.daily_minutes}">
+          <output id="minutes-out">${state.daily_minutes} 分钟</output>
+        </div>
+        <p class="muted small">选一个真实能做到的时间，比选一个“理想时间”更容易坚持。</p>
+
+        <div class="quiz-nav">
+          <button class="btn btn-ghost" type="button" data-prev>上一题</button>
+          <button class="btn btn-primary" type="button" data-submit id="submit-quiz">生成我的阅读画像</button>
+        </div>
+      </article>`;
+
+    body.querySelectorAll("input[name=goal]").forEach((input) => input.addEventListener("change", () => {
+      state.goal = input.value;
+      markSelected(body.querySelectorAll(".goal-options .quiz-option"));
+    }));
+    body.querySelectorAll("input[name=level]").forEach((input) => input.addEventListener("change", () => {
+      state.level = input.value;
+      markSelected(body.querySelectorAll(".level-options .quiz-option"));
+    }));
+    body.querySelectorAll("#interests input").forEach((input) => input.addEventListener("change", () => {
+      state.interests = [...body.querySelectorAll("#interests input:checked")].map((el) => el.value);
+    }));
+    const range = body.querySelector("#minutes");
+    range.addEventListener("input", () => {
+      state.daily_minutes = Number(range.value);
+      body.querySelector("#minutes-out").textContent = `${range.value} 分钟`;
+    });
+    body.querySelector("[data-prev]")?.addEventListener("click", goPrev);
+    body.querySelector("[data-submit]")?.addEventListener("click", submitQuiz);
+    setProgress();
+  }
+
+  function markSelected(els) {
+    els.forEach((el) => el.classList.toggle("selected", el.querySelector("input").checked));
+  }
+
+  function goNext() {
+    const total = totalSteps();
+    if (state.step < total - 1) {
+      state.step += 1;
+      render();
+    }
+  }
+
+  function goPrev() {
+    if (state.step > 0) {
+      state.step -= 1;
+      render();
+    }
+  }
+
+  function render() {
+    const questions = state.data.questions;
+    if (state.step >= questions.length) renderGoalStep();
+    else renderQuestion();
+  }
+
+  async function submitQuiz() {
+    const btn = body.querySelector("#submit-quiz");
+    const answers = Object.entries(state.answers).map(([questionId, optionKey]) => ({
+      question_id: Number(questionId),
+      option_key: optionKey,
+    }));
+    if (answers.length < 4) {
+      const ok = confirm(`你只回答了几道题（${answers.length}/${state.data.questions.length}），画像会比较粗略。确定继续吗？`);
+      if (!ok) return;
+    }
+    setBusy(btn, true, "正在生成画像…");
+    try {
+      const res = await api.post("/questionnaire", {
+        answers,
+        goal: state.goal,
+        interests: state.interests,
+        level: state.level,
+        daily_minutes: state.daily_minutes,
+      });
+      const profile = { ...res.profile, coverage: res.coverage };
+      state.result = profile;
+      renderResult(profile);
+      toast("画像已保存", "ok");
+    } catch (err) {
+      showAlert(alertBox, err.message || "提交失败，请稍后重试");
+      setBusy(btn, false);
+    }
+  }
+
+  function renderResult(profile) {
+    progressBar.style.width = "100%";
+    stepLabel.textContent = "画像已生成";
+    const dims = profile.dims || {};
+    const traits = (profile.traits || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("");
+    const lowCoverage = (profile.coverage ?? 100) < 60;
+    body.innerHTML = `
+      <article class="profile-result">
+        <header class="result-head">
+          <div>
+            <p class="eyebrow">YOUR PROFILE</p>
+            <h2>你的阅读画像</h2>
+            <p class="muted">${escapeHtml(profile.summary || "")}</p>
+          </div>
+          <div class="traits">${traits}</div>
+        </header>
+        ${lowCoverage ? `<div class="alert">答题覆盖率 ${profile.coverage}%：画像偏粗略，建议补完问卷以获得更准确的推荐。</div>` : ""}
+        <div class="dim-list">
+          ${Object.entries(dims).map(([key, value]) => `
+            <div class="dim-row">
+              <span class="dim-name">${escapeHtml(DIM_LABELS[key] || key)}</span>
+              <div class="progress"><span style="width:${Number(value)}%"></span></div>
+              <span class="dim-value">${Number(value)}</span>
+            </div>`).join("")}
+        </div>
+        <dl class="result-facts">
+          <div><dt>阅读目标</dt><dd>${escapeHtml(profile.goal_label || profile.goal)}</dd></div>
+          <div><dt>阅读水平</dt><dd>${escapeHtml(LEVEL_LABELS[profile.level] || profile.level)}</dd></div>
+          <div><dt>每天可读</dt><dd>${profile.daily_minutes} 分钟</dd></div>
+          <div><dt>兴趣</dt><dd>${(profile.interests || []).map(escapeHtml).join("、") || "暂未选择"}</dd></div>
+        </dl>
+        <div class="result-actions">
+          <button class="btn btn-primary" type="button" id="get-recommend">查看为我推荐的书</button>
+          <button class="btn btn-ghost" type="button" id="redo">重新作答</button>
+        </div>
+      </article>`;
+    body.querySelector("#get-recommend")?.addEventListener("click", () => location.assign("/recommend?refresh=1"));
+    body.querySelector("#redo")?.addEventListener("click", () => {
+      state.step = 0;
+      state.result = null;
+      state.answers = {};
+      render();
+    });
+  }
+
+  async function boot() {
+    if (!me) return;
+    try {
+      const [questionnaire, current] = await Promise.all([
+        api.get("/questionnaire"),
+        api.get("/profile").catch(() => null),
+      ]);
+      state.data = questionnaire;
+      if (current && current.completed && current.profile) {
+        const profile = { ...current.profile, coverage: current.profile.confidence ?? 100 };
+        state.result = profile;
+        renderResult(profile);
+      } else {
+        body.dataset.state = "ready";
+        render();
+      }
+    } catch (err) {
+      body.innerHTML = `<div class="alert error">问卷加载失败：${escapeHtml(err.message)}</div>
+        <button class="btn btn-primary" type="button" onclick="location.reload()">重试</button>`;
+    }
+  }
+
+  boot();
+</script>
+{% endblock %}

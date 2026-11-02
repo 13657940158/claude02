@@ -1,0 +1,41 @@
+# 环境与密钥
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 本地数据
+*.db
+*.sqlite3
+data/books/*
+!data/books/.gitkeep
+!data/books/README.md
+# 仅保留公有领域示例；新增书稿默认不进入版本库
+!data/books/论语-孔子.txt
+!data/books/道德经-老子.txt
+data/covers/*
+!data/covers/.gitkeep
+data/uploads/
+logs/
+backups/
+
+# 评测产物（黄金集保留）
+eval/reports/*
+!eval/reports/.gitkeep
+eval/adjustments/*
+!eval/adjustments/.gitkeep
+
+# 容器与临时
+.docker/
+tmp/
+*.log

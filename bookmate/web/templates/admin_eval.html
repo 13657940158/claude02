@@ -1,0 +1,382 @@
+{% extends "base.html" %}
+
+{% block title %}评测中心 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="eval-page" id="eval-root">
+  <header class="page-head">
+    <div>
+      <p class="eyebrow">RAG EVALUATION</p>
+      <h1>评测中心</h1>
+      <p>用金标问题跑 RAGAS：忠实度、答案相关性、上下文精确率与召回率。结果写入 CSV，并根据失败用例生成可执行的调优建议。</p>
+    </div>
+    <div class="page-actions">
+      <a class="btn btn-ghost" href="/admin">管理后台</a>
+      <button class="btn btn-primary" type="button" id="open-run-form">发起评测</button>
+    </div>
+  </header>
+
+  <div id="eval-alert"></div>
+
+  <section class="card eval-config" id="eval-config">
+    <div class="panel-head"><h2>评测参数</h2><span class="muted small">一次完整评测约 20-40 分钟，期间可离开页面</span></div>
+    <form id="eval-form" class="eval-form">
+      <div class="form-row">
+        <div class="field">
+          <label for="eval-dataset">数据集</label>
+          <input class="input" id="eval-dataset" value="eval/datasets/golden_v1.jsonl" maxlength="255">
+        </div>
+        <div class="field">
+          <label for="eval-run-name">运行名称（可选）</label>
+          <input class="input" id="eval-run-name" maxlength="80" placeholder="留空自动生成时间戳">
+        </div>
+        <div class="field field-narrow">
+          <label for="eval-limit">用例上限</label>
+          <input class="input" id="eval-limit" type="number" min="1" max="200" placeholder="全部">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field field-narrow">
+          <label for="eval-top-k">top_k</label>
+          <input class="input" id="eval-top-k" type="number" min="1" max="50" value="20">
+        </div>
+        <div class="field field-narrow">
+          <label for="eval-rerank">rerank_top_n</label>
+          <input class="input" id="eval-rerank" type="number" min="1" max="20" placeholder="默认 8">
+        </div>
+        <div class="field">
+          <label for="eval-baseline">对比基线（可选）</label>
+          <select class="select" id="eval-baseline"><option value="">不对比</option></select>
+        </div>
+        <label class="inline-check eval-adjust-check"><input type="checkbox" id="eval-adjust" checked> 生成 LLM 调优建议</label>
+      </div>
+      <div class="row-actions end">
+        <button class="btn btn-ghost" type="button" id="close-run-form">收起</button>
+        <button class="btn btn-primary" type="submit" id="start-eval">开始评测</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="eval-thresholds" id="eval-thresholds" aria-label="通过阈值">
+    <span class="muted small">通过阈值</span>
+    <span class="threshold-chip">忠实度 ≥ 65%</span>
+    <span class="threshold-chip">答案相关性 ≥ 65%</span>
+    <span class="threshold-chip">上下文精确率 ≥ 55%</span>
+    <span class="threshold-chip">上下文召回率 ≥ 60%</span>
+  </section>
+
+  <section class="eval-main">
+    <div class="eval-runs">
+      <div class="panel-head">
+        <h2>运行记录</h2>
+        <button class="btn btn-ghost btn-sm" type="button" id="reload-runs">刷新</button>
+      </div>
+      <div id="runs-list" class="runs-list">
+        <div class="skeleton" style="height:110px"></div>
+        <div class="skeleton" style="height:110px"></div>
+      </div>
+    </div>
+
+    <div class="eval-detail" id="eval-detail">
+      <div class="empty-state small-empty">
+        <h2>选择一个运行</h2>
+        <p class="muted">左侧运行记录展示了每轮的综合分与通过率。点开可查看逐用例指标、失败归因与调优建议。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card prompt-view">
+    <details>
+      <summary><strong>当前 RAG 系统提示词</strong><span class="muted small">用于回答、评测与调优结论对照</span></summary>
+      <pre id="current-prompt" class="prompt-pre">加载中…</pre>
+    </details>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, requireLogin, isAdmin, escapeHtml, showAlert, toast, setBusy, formatDate, relTime } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const me = requireLogin();
+  const runsList = document.getElementById("runs-list");
+  const detail = document.getElementById("eval-detail");
+  const alertBox = document.getElementById("eval-alert");
+  const config = document.getElementById("eval-config");
+  const state = { runs: [], selectedId: null, pollTimer: null, pendingRunId: null };
+
+  const METRICS = {
+    faithfulness: { label: "忠实度", threshold: 0.65 },
+    answer_relevancy: { label: "答案相关性", threshold: 0.65 },
+    context_precision: { label: "上下文精确率", threshold: 0.55 },
+    context_recall: { label: "上下文召回率", threshold: 0.6 },
+  };
+  const STATUS_LABELS = { queued: "排队中", running: "评测中", done: "已完成", partial: "部分完成", failed: "失败" };
+  const FAILURE_LABELS = {
+    hallucination: "幻觉", retrieval_missing: "召回缺失", retrieval_noise: "召回噪声",
+    off_topic: "偏题", guardrail: "安全拦截", no_answer: "无答案", degraded: "降级",
+  };
+  const PRIORITY_CLASS = { P0: "bad", P1: "warn", P2: "info" };
+
+  function pct(value) {
+    if (value === null || value === undefined) return "—";
+    return `${Math.round(Number(value) * 1000) / 10}%`;
+  }
+
+  function metricCard(key, value, threshold) {
+    const ok = value !== null && value !== undefined && value >= threshold;
+    return `<div class="metric-card ${ok ? "ok" : "warn"}">
+      <span class="metric-label">${METRICS[key].label}</span>
+      <strong>${pct(value)}</strong>
+      <span class="metric-threshold">阈值 ${Math.round(threshold * 100)}%</span>
+    </div>`;
+  }
+
+  function runCard(run) {
+    const metrics = run.metrics || {};
+    return `
+      <article class="run-card ${run.id === state.selectedId ? "active" : ""} status-${escapeHtml(run.status)}">
+        <button class="run-card-btn" type="button" data-run="${run.id}">
+          <div class="run-top">
+            <strong>${escapeHtml(run.run_name)}</strong>
+            <span class="status-pill status-${escapeHtml(run.status)}">${STATUS_LABELS[run.status] || run.status}</span>
+          </div>
+          <div class="run-meta small muted">
+            ${run.case_count || 0} 个用例 · ${formatDate(run.created_at) || ""} ${run.finished_at ? `· 完成于 ${relTime(run.finished_at)}` : ""}
+          </div>
+          <div class="run-metrics">
+            <span>综合 <strong>${pct(metrics.overall)}</strong></span>
+            <span>忠实度 <strong>${pct(metrics.faithfulness)}</strong></span>
+            <span>相关性 <strong>${pct(metrics.answer_relevancy)}</strong></span>
+            <span>通过率 <strong>${pct(metrics.pass_rate)}</strong></span>
+          </div>
+          ${run.error && run.status !== "done" ? `<p class="small text-bad">${escapeHtml(run.error.slice(0, 90))}</p>` : ""}
+        </button>
+      </article>`;
+  }
+
+  async function loadRuns(selectId = null) {
+    try {
+      const rows = await api.get("/eval/runs?limit=30");
+      state.runs = rows;
+      runsList.innerHTML = rows.length ? rows.map(runCard).join("") : `<p class="muted pad-12">还没有评测运行。</p>`;
+      runsList.querySelectorAll("[data-run]").forEach((btn) => btn.addEventListener("click", () => openRun(Number(btn.dataset.run))));
+      const baseline = document.getElementById("eval-baseline");
+      baseline.innerHTML = `<option value="">不对比</option>` + rows
+        .filter((r) => ["done", "partial"].includes(r.status))
+        .map((r) => `<option value="${r.id}">${escapeHtml(r.run_name)}</option>`).join("");
+      const target = selectId || state.selectedId;
+      if (target) openRun(target);
+      schedulePoll();
+    } catch (err) {
+      runsList.innerHTML = "";
+      showAlert(alertBox, err.message || "评测记录加载失败");
+    }
+  }
+
+  function schedulePoll() {
+    clearTimeout(state.pollTimer);
+    const active = state.runs.some((r) => ["queued", "running"].includes(r.status));
+    if (!active) return;
+    state.pollTimer = setTimeout(async () => {
+      await loadRuns(state.pendingRunId || state.selectedId);
+      if (state.pendingRunId) {
+        const run = state.runs.find((r) => r.id === state.pendingRunId);
+        if (run && ["done", "partial", "failed"].includes(run.status)) {
+          state.pendingRunId = null;
+          toast(`评测 ${STATUS_LABELS[run.status] || run.status}`, run.status === "failed" ? "bad" : "ok");
+        }
+      }
+    }, 5000);
+  }
+
+  async function openRun(runId) {
+    state.selectedId = runId;
+    runsList.querySelectorAll(".run-card").forEach((el, index) => {
+      el.classList.toggle("active", state.runs[index]?.id === runId);
+    });
+    detail.innerHTML = `<div class="skeleton" style="height:300px"></div>`;
+    try {
+      const [run, cases, adjustments] = await Promise.all([
+        api.get(`/eval/runs/${runId}`),
+        api.get(`/eval/runs/${runId}/cases`).catch(() => []),
+        api.get(`/eval/runs/${runId}/adjustments`).catch(() => []),
+      ]);
+      renderRun(run, cases, adjustments);
+    } catch (err) {
+      detail.innerHTML = "";
+      showAlert(alertBox, err.message || "运行详情加载失败");
+    }
+  }
+
+  function renderRun(run, cases, adjustments) {
+    const metrics = run.metrics || {};
+    const failures = cases.filter((c) => c.failure_type);
+    const failureTypes = metrics.failure_types || {};
+    const expected = metrics.metrics_expected;
+    const missing = metrics.metrics_missing;
+    const isRunning = ["queued", "running"].includes(run.status);
+    detail.innerHTML = `
+      <article class="run-detail-head">
+        <div class="panel-head">
+          <div>
+            <h2>${escapeHtml(run.run_name)}</h2>
+            <p class="muted small">数据集 ${escapeHtml(run.dataset)} · 基线 ${run.baseline_run_id ? `#${run.baseline_run_id}` : "无"} · ${STATUS_LABELS[run.status] || run.status}</p>
+          </div>
+          <div class="row-actions">
+            ${["done", "partial"].includes(run.status) ? `
+              <a class="btn btn-ghost btn-sm" href="/api/v1/eval/runs/${run.id}/export?kind=detail">逐用例 CSV</a>
+              <a class="btn btn-ghost btn-sm" href="/api/v1/eval/runs/${run.id}/export?kind=summary">汇总 CSV</a>
+              <a class="btn btn-ghost btn-sm" href="/api/v1/eval/runs/${run.id}/export?kind=json">run.json</a>` : ""}
+          </div>
+        </div>
+        ${isRunning ? `<div class="alert warn">评测进行中。RAGAS 串行调用在线模型，19 个用例通常需要 20-40 分钟；页面会自动刷新状态。</div>` : ""}
+        ${run.error && run.status === "partial" ? `<div class="alert warn">${escapeHtml(run.error)}</div>` : ""}
+        ${missing ? `<div class="alert warn">${missing}/${expected} 个用例的指标缺失（限流或模型拒绝），均值只统计有效用例。</div>` : ""}
+        ${expected !== undefined ? `<p class="muted small">指标覆盖：${expected - (missing || 0)}/${expected} 个有效用例；失败 ${metrics.failure_count ?? failures.length} 个。</p>` : ""}
+        <div class="metric-grid">
+          ${Object.entries(METRICS).map(([key, meta]) => metricCard(key, metrics[key], meta.threshold)).join("")}
+          <div class="metric-card overall"><span class="metric-label">综合分</span><strong>${pct(metrics.overall)}</strong>
+            <span class="metric-threshold">平均延迟 ${metrics.avg_latency_ms ?? "—"} ms</span></div>
+        </div>
+        ${run.delta && Object.keys(run.delta).length ? `
+          <div class="delta-row">
+            <span class="muted small">相对基线</span>
+            ${Object.entries(METRICS).map(([key, meta]) => {
+              const d = run.delta[key];
+              if (d === null || d === undefined) return "";
+              const up = Number(d) >= 0;
+              return `<span class="delta ${up ? "up" : "down"}">${meta.label} ${up ? "+" : ""}${Math.round(Number(d) * 1000) / 10}%</span>`;
+            }).join("")}
+          </div>` : ""}
+        <div class="failure-row">
+          <span class="muted small">失败归因</span>
+          ${Object.keys(FAILURE_LABELS).filter((k) => failureTypes[k]).map((k) =>
+            `<span class="failure-chip">${FAILURE_LABELS[k]} ${failureTypes[k]}</span>`).join("") || `<span class="muted small">没有失败用例</span>`}
+        </div>
+      </article>
+
+      ${adjustments.length ? `
+        <section class="adjustments">
+          <div class="panel-head"><h2>调优建议</h2><span class="muted small">由失败用例汇总，需人工确认后应用</span></div>
+          <div class="adjustment-list">
+            ${adjustments.map((a) => `
+              <article class="adjustment-card ${a.applied ? "applied" : ""}">
+                <header>
+                  <span class="priority ${PRIORITY_CLASS[a.priority] || "info"}">${escapeHtml(a.priority || "P2")}</span>
+                  <strong>${escapeHtml(a.category)}</strong>
+                  ${a.applied ? `<span class="tag">已采纳</span>` : `<span class="tag tag-dim">待确认</span>`}
+                </header>
+                <p class="adj-finding"><span class="muted small">发现：</span>${escapeHtml(a.finding)}</p>
+                <p class="adj-reco"><span class="muted small">建议：</span>${escapeHtml(a.recommendation)}</p>
+                <p class="small muted">证据用例：${(a.evidence_cases || []).map(escapeHtml).join(", ") || "—"}</p>
+                ${a.applied_note ? `<p class="small applied-note">已应用说明：${escapeHtml(a.applied_note)}</p>` : ""}
+                ${a.applied ? "" : `
+                  <form class="apply-form" data-adjust="${a.id}">
+                    <input class="input input-sm" name="note" maxlength="2000" placeholder="说明你如何应用（例如：提示词 v2 已加入逐句引用要求）">
+                    <button class="btn btn-primary btn-sm" type="submit">标记已采纳</button>
+                  </form>`}
+              </article>`).join("")}
+          </div>
+        </section>` : ""}
+
+      <section class="cases-section">
+        <div class="panel-head"><h2>逐用例结果</h2><span class="muted small">${cases.length} 个用例 · 失败 ${failures.length} 个</span></div>
+        <div class="table-wrap">
+          <table class="data-table eval-table">
+            <thead><tr><th>用例</th><th>问题</th><th>忠实度</th><th>相关性</th><th>精确率</th><th>召回率</th><th>章节命中</th><th>归因</th><th>回答</th></tr></thead>
+            <tbody>
+              ${cases.map((c) => `
+                <tr class="${c.failure_type ? "row-fail" : ""}">
+                  <td><code>${escapeHtml(c.case_key)}</code><br><span class="small muted">${escapeHtml(c.category || "")}</span></td>
+                  <td class="cell-question">${escapeHtml(c.question || "")}</td>
+                  <td>${pct(c.faithfulness)}</td>
+                  <td>${pct(c.answer_relevancy)}</td>
+                  <td>${pct(c.context_precision)}</td>
+                  <td>${pct(c.context_recall)}</td>
+                  <td>${c.chapter_hit_rate != null ? pct(c.chapter_hit_rate) : "—"}</td>
+                  <td>${c.failure_type ? `<span class="failure-chip">${FAILURE_LABELS[c.failure_type] || c.failure_type}</span>` : "—"}</td>
+                  <td><details class="answer-details"><summary>展开</summary>
+                    <p class="small answer-text">${escapeHtml(c.answer || "（空）")}</p>
+                    <p class="small muted">引用 ${c.citation_count ?? 0} 条 · ${c.latency_ms ?? "—"} ms</p>
+                  </details></td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+        <p class="muted small">CSV 为 UTF-8-SIG 编码，可直接用 Excel 打开；失败用例按「忠实度 → 召回 → 精确率 → 相关性」优先级归为单一类型。</p>
+      </section>`;
+
+    detail.querySelectorAll(".apply-form").forEach((form) => form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const id = Number(form.dataset.adjust);
+      const btn = form.querySelector("button");
+      setBusy(btn, true, "保存中…");
+      try {
+        await api.patch(`/eval/adjustments/${id}`, { applied: true, applied_note: form.note.value.trim() || null });
+        toast("已标记为采纳", "ok");
+        openRun(run.id);
+      } catch (err) {
+        toast(err.message || "保存失败", "bad");
+        setBusy(btn, false);
+      }
+    }));
+  }
+
+  /* ---------- 发起评测 ---------- */
+  document.getElementById("open-run-form")?.addEventListener("click", () => { config.hidden = false; config.scrollIntoView({ behavior: "smooth" }); });
+  document.getElementById("close-run-form")?.addEventListener("click", () => { config.hidden = true; });
+
+  document.getElementById("eval-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const btn = document.getElementById("start-eval");
+    const body = {
+      dataset: document.getElementById("eval-dataset").value.trim(),
+      run_name: document.getElementById("eval-run-name").value.trim() || undefined,
+      limit: document.getElementById("eval-limit").value ? Number(document.getElementById("eval-limit").value) : undefined,
+      top_k: Number(document.getElementById("eval-top-k").value || 20),
+      rerank_top_n: document.getElementById("eval-rerank").value ? Number(document.getElementById("eval-rerank").value) : undefined,
+      baseline_run_id: document.getElementById("eval-baseline").value ? Number(document.getElementById("eval-baseline").value) : undefined,
+      adjust: document.getElementById("eval-adjust").checked,
+    };
+    if (body.limit !== undefined && body.limit < body.top_k) {
+      toast("用例上限小于 top_k，请调整参数", "warn");
+      return;
+    }
+    if (!confirm("评测会串行调用在线模型打分，可能持续 20-40 分钟并产生费用。确定开始？")) return;
+    setBusy(btn, true, "提交中…");
+    try {
+      const res = await api.post("/eval/runs", body);
+      state.pendingRunId = res.id;
+      toast(`评测已排队：${res.run_name}`, "ok");
+      document.getElementById("eval-run-name").value = "";
+      await loadRuns(res.id);
+      state.pendingRunId = res.id;
+      schedulePoll();
+    } catch (err) {
+      showAlert(alertBox, err.message || "评测启动失败");
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  document.getElementById("reload-runs")?.addEventListener("click", () => loadRuns(state.selectedId));
+
+  async function loadPrompt() {
+    try {
+      const res = await api.get("/eval/prompts/current");
+      document.getElementById("current-prompt").textContent = res.content || "";
+    } catch (err) {
+      document.getElementById("current-prompt").textContent = err.message || "加载失败";
+    }
+  }
+
+  if (me && isAdmin()) {
+    loadRuns();
+    loadPrompt();
+  } else if (me) {
+    runsList.innerHTML = "";
+    detail.innerHTML = `<div class="empty-state"><h2>没有访问权限</h2><p class="muted">评测中心仅对管理员开放。</p><a class="btn btn-primary" href="/">回到首页</a></div>`;
+  }
+</script>
+{% endblock %}

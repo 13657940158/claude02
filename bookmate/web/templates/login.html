@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block title %}登录 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="auth-layout">
+  <div class="auth-copy">
+    <p class="eyebrow">WELCOME BACK</p>
+    <h1>回来接着读。</h1>
+    <p class="lead">登录后，你的阅读画像、推荐、计划、笔记和记忆都会回来。伴读也知道你上次读到哪儿。</p>
+    <ul class="auth-points">
+      <li>阅读进度跨设备同步</li>
+      <li>推荐会参考你的「喜欢 / 不喜欢」</li>
+      <li>画像与记忆随时可查看、可删除</li>
+    </ul>
+    <p class="muted small">还没有账号？<a href="/register">创建一个，3 分钟开始</a></p>
+  </div>
+
+  <div class="auth-card">
+    <h2>登录</h2>
+    <p class="muted small">使用注册邮箱与密码登录。</p>
+    <div id="login-alert"></div>
+    <form id="login-form" novalidate>
+      <div class="field">
+        <label for="email">邮箱</label>
+        <input class="input" id="email" name="email" type="email" autocomplete="email" required placeholder="you@example.com">
+        <span class="field-error" data-error-for="email"></span>
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <div class="input-with-action">
+          <input class="input" id="password" name="password" type="password" autocomplete="current-password" required placeholder="至少 8 位，含字母与数字">
+          <button class="btn btn-ghost btn-sm" type="button" data-toggle-password aria-label="显示密码">显示</button>
+        </div>
+        <span class="field-error" data-error-for="password"></span>
+      </div>
+      <div class="form-row">
+        <label class="inline-check"><input type="checkbox" id="remember" checked> 记住登录状态</label>
+        <a class="small" href="/register">没有账号？</a>
+      </div>
+      <button class="btn btn-primary btn-block" type="submit" id="login-submit">登录</button>
+    </form>
+    <div class="auth-divider"><span>或</span></div>
+    <a class="btn btn-ghost btn-block" href="/books">先随便逛逛书目</a>
+    <p class="muted small auth-note">登录失败不会泄露账号是否存在；如忘记密码，请联系管理员重置。</p>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, setToken, setUser, toast, queryParam, setBusy, showAlert } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const form = document.getElementById("login-form");
+  const alertBox = document.getElementById("login-alert");
+  const submit = document.getElementById("login-submit");
+
+  document.querySelector("[data-toggle-password]")?.addEventListener("click", (event) => {
+    const input = document.getElementById("password");
+    const shown = input.type === "text";
+    input.type = shown ? "password" : "text";
+    event.currentTarget.textContent = shown ? "显示" : "隐藏";
+  });
+
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    showAlert(alertBox, "");
+    const email = form.email.value.trim();
+    const password = form.password.value;
+    if (!email || !password) {
+      showAlert(alertBox, "请填写邮箱与密码");
+      return;
+    }
+    setBusy(submit, true, "登录中…");
+    try {
+      const res = await api.post("/auth/login", { email, password });
+      setToken(res.access_token);
+      setUser(res.user || { email });
+      toast("登录成功", "ok");
+      const next = queryParam("next");
+      location.assign(next && next.startsWith("/") ? next : "/");
+    } catch (err) {
+      showAlert(alertBox, err.message || "登录失败，请稍后重试");
+    } finally {
+      setBusy(submit, false);
+    }
+  });
+</script>
+{% endblock %}

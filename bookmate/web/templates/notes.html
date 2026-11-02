@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+
+{% block title %}阅读笔记 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="notes-page">
+  <header class="page-head">
+    <div>
+      <p class="eyebrow">NOTES</p>
+      <h1>阅读笔记</h1>
+      <p>把读到的想法、疑问和喜欢的句子记下来。笔记会关联书籍与章节，可以按书筛选。</p>
+    </div>
+    <div class="page-actions">
+      <a class="btn btn-ghost" href="/progress">阅读进度</a>
+      <button class="btn btn-primary" type="button" id="new-note-btn">写一条笔记</button>
+    </div>
+  </header>
+
+  <div id="notes-alert"></div>
+
+  <section class="note-compose card" id="note-compose" hidden>
+    <h2>新笔记</h2>
+    <form id="note-create-form">
+      <div class="form-row">
+        <div class="field">
+          <label for="note-book">书</label>
+          <select class="select" id="note-book" required></select>
+        </div>
+        <div class="field field-narrow">
+          <label for="note-chapter">章节（可选）</label>
+          <input class="input" id="note-chapter" type="number" min="1" max="10000" placeholder="如 3">
+        </div>
+      </div>
+      <div class="field">
+        <label for="note-quote">摘录原文（可选）</label>
+        <input class="input" id="note-quote" maxlength="2000" placeholder="把打动你的原句抄在这里">
+      </div>
+      <div class="field">
+        <label for="note-body">我的想法</label>
+        <textarea class="input" id="note-body" rows="4" maxlength="5000" required placeholder="这一段让我想到…"></textarea>
+      </div>
+      <div class="form-row end">
+        <button class="btn btn-ghost" type="button" id="cancel-note">取消</button>
+        <button class="btn btn-primary" type="submit" id="save-note">保存笔记</button>
+      </div>
+    </form>
+  </section>
+
+  <div class="filter-bar">
+    <div class="filter-group">
+      <span class="filter-label">按书筛选</span>
+      <select class="select select-sm" id="note-filter-book">
+        <option value="">全部书籍</option>
+      </select>
+    </div>
+    <span class="muted small" id="notes-count"></span>
+  </div>
+
+  <div id="notes-list" class="notes-list">
+    <div class="skeleton" style="height:120px"></div>
+    <div class="skeleton" style="height:120px"></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, requireLogin, escapeHtml, showAlert, toast, setBusy, queryParam, formatDate, relTime } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const me = requireLogin();
+  const list = document.getElementById("notes-list");
+  const alertBox = document.getElementById("notes-alert");
+  const compose = document.getElementById("note-compose");
+  const bookSelect = document.getElementById("note-book");
+  const filterSelect = document.getElementById("note-filter-book");
+  const countEl = document.getElementById("notes-count");
+  const state = { bookId: queryParam("book_id"), books: [] };
+
+  function bookTitle(id) {
+    return state.books.find((b) => b.id === id)?.title || `#${id}`;
+  }
+
+  function noteCard(note) {
+    return `
+      <article class="note-card">
+        <header class="note-head">
+          <a class="note-book" href="/books/${note.book_id}">《${escapeHtml(bookTitle(note.book_id))}》</a>
+          ${note.chapter_no ? `<span class="note-chapter">第 ${note.chapter_no} 章</span>` : ""}
+          <time class="muted small" title="${escapeHtml(note.created_at || "")}">${relTime(note.created_at)}</time>
+          <button class="btn btn-ghost btn-sm note-del" type="button" data-note="${note.id}" aria-label="删除笔记">删除</button>
+        </header>
+        ${note.quote ? `<blockquote class="note-quote">${escapeHtml(note.quote)}</blockquote>` : ""}
+        <p class="note-content">${escapeHtml(note.content).replace(/\n/g, "<br>")}</p>
+        <div class="tag-row">${(note.tags || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("")}
+          ${note.companion_session_id ? `<span class="tag tag-dim">来自伴读</span>` : ""}</div>
+      </article>`;
+  }
+
+  async function load() {
+    showAlert(alertBox, "");
+    const params = new URLSearchParams({ limit: "100" });
+    if (state.bookId) params.set("book_id", state.bookId);
+    try {
+      const rows = await api.get(`/notes?${params}`);
+      countEl.textContent = `${rows.length} 条笔记`;
+      list.innerHTML = rows.length ? rows.map(noteCard).join("") : `
+        <div class="empty-state"><h2>还没有笔记</h2>
+          <p class="muted">读到有感触的地方，点「写一条笔记」记下来。笔记也会出现在计划页。</p>
+          <button class="btn btn-primary" type="button" id="empty-compose">写第一条笔记</button></div>`;
+      list.querySelector("#empty-compose")?.addEventListener("click", () => compose.hidden = false);
+      list.querySelectorAll("[data-note]").forEach((btn) => btn.addEventListener("click", async () => {
+        if (!confirm("删除这条笔记？删除后无法恢复。")) return;
+        try {
+          await api.del(`/notes/${btn.dataset.note}`);
+          btn.closest(".note-card").remove();
+          toast("笔记已删除", "ok");
+        } catch (err) {
+          toast(err.message || "删除失败", "bad");
+        }
+      }));
+    } catch (err) {
+      list.innerHTML = "";
+      showAlert(alertBox, err.message || "笔记加载失败");
+    }
+  }
+
+  async function loadBooks() {
+    try {
+      const data = await api.get("/books?page_size=100&sort=title");
+      state.books = data.items || [];
+      const options = state.books.map((b) => `<option value="${b.id}">《${escapeHtml(b.title)}》</option>`).join("");
+      bookSelect.innerHTML = `<option value="">选择一本书</option>${options}`;
+      // 只把有笔记的书放进筛选下拉
+      const noteBookIds = new Set();
+      try {
+        const rows = await api.get("/notes?limit=200");
+        rows.forEach((n) => noteBookIds.add(n.book_id));
+      } catch { /* 忽略 */ }
+      filterSelect.innerHTML = `<option value="">全部书籍</option>${state.books
+        .filter((b) => noteBookIds.has(b.id))
+        .map((b) => `<option value="${b.id}">《${escapeHtml(b.title)}》</option>`).join("")}`;
+      filterSelect.value = state.bookId || "";
+    } catch { /* 忽略 */ }
+  }
+
+  document.getElementById("new-note-btn")?.addEventListener("click", () => {
+    compose.hidden = false;
+    document.getElementById("note-body").focus();
+  });
+  document.getElementById("cancel-note")?.addEventListener("click", () => {
+    compose.hidden = true;
+    document.getElementById("note-create-form").reset();
+  });
+  filterSelect?.addEventListener("change", () => {
+    state.bookId = filterSelect.value;
+    const url = new URL(location.href);
+    state.bookId ? url.searchParams.set("book_id", state.bookId) : url.searchParams.delete("book_id");
+    history.replaceState(null, "", url);
+    load();
+  });
+
+  document.getElementById("note-create-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const bookId = Number(bookSelect.value);
+    const content = document.getElementById("note-body").value.trim();
+    if (!bookId) { toast("请选择一本书", "warn"); return; }
+    if (!content) { toast("写点内容再保存", "warn"); return; }
+    const chapter = document.getElementById("note-chapter").value;
+    const btn = document.getElementById("save-note");
+    setBusy(btn, true, "保存中…");
+    try {
+      await api.post("/notes", {
+        book_id: bookId,
+        content,
+        chapter_no: chapter === "" ? null : Number(chapter),
+        quote: document.getElementById("note-quote").value.trim() || null,
+      });
+      toast("笔记已保存", "ok");
+      event.target.reset();
+      compose.hidden = true;
+      await loadBooks();
+      await load();
+    } catch (err) {
+      toast(err.message || "保存失败", "bad");
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  (async function boot() {
+    if (!me) return;
+    await loadBooks();
+    await load();
+  })();
+</script>
+{% endblock %}

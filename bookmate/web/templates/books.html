@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+
+{% block title %}书架 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<header class="page-head">
+  <div>
+    <p class="eyebrow">LIBRARY</p>
+    <h1>书架</h1>
+    <p>全部书目都可以拆书与排导读计划；标注「可检索」的书已完成原文入库，可以回答原文问题。</p>
+  </div>
+  <div class="search-box">
+    <input class="input" id="book-search" type="search" placeholder="搜索书名、作者或关键词" aria-label="搜索书目">
+    <button class="btn btn-primary" id="search-btn" type="button">搜索</button>
+  </div>
+</header>
+
+<div class="filter-bar" aria-label="筛选">
+  <div class="filter-group">
+    <span class="filter-label">分类</span>
+    <div class="chips" id="category-chips">
+      <button class="chip chip-btn active" type="button" data-category="">全部</button>
+    </div>
+  </div>
+  <div class="filter-group">
+    <span class="filter-label">排序</span>
+    <select class="select select-sm" id="sort-select" aria-label="排序">
+      <option value="newest">最新入库</option>
+      <option value="rating">评分最高</option>
+      <option value="difficulty">难度从易到难</option>
+      <option value="minutes">阅读时长最短</option>
+      <option value="title">书名</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <span class="filter-label">难度</span>
+    <select class="select select-sm" id="difficulty-select" aria-label="难度">
+      <option value="">不限</option>
+      <option value="1">1 星 · 轻松</option>
+      <option value="2">2 星</option>
+      <option value="3">3 星 · 适中</option>
+      <option value="4">4 星</option>
+      <option value="5">5 星 · 挑战</option>
+    </select>
+  </div>
+</div>
+
+<div id="books-alert"></div>
+<div id="books-grid" class="book-grid" aria-live="polite">
+  <div class="skeleton" style="height:340px"></div>
+  <div class="skeleton" style="height:340px"></div>
+  <div class="skeleton" style="height:340px"></div>
+</div>
+
+<nav class="pager" id="books-pager" aria-label="分页"></nav>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, escapeHtml, showAlert, debounce, queryParam, toast } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const grid = document.getElementById("books-grid");
+  const pager = document.getElementById("books-pager");
+  const alertBox = document.getElementById("books-alert");
+  const searchInput = document.getElementById("book-search");
+  const sortSelect = document.getElementById("sort-select");
+  const difficultySelect = document.getElementById("difficulty-select");
+  const categoryChips = document.getElementById("category-chips");
+
+  const state = {
+    page: Number(queryParam("page", "1")) || 1,
+    pageSize: 12,
+    q: queryParam("q"),
+    category: queryParam("category"),
+    sort: "newest",
+    difficulty: "",
+    total: 0,
+  };
+  searchInput.value = state.q;
+
+  const COVER_COLORS = ["#dfe9e3", "#efe4d4", "#e3e0ef", "#e9dfe4", "#dfe7ef", "#e8ead9"];
+
+  function cover(book, index) {
+    if (book.cover_url) return `<img src="${escapeHtml(book.cover_url)}" alt="">`;
+    const bg = COVER_COLORS[index % COVER_COLORS.length];
+    return `<div class="cover-fallback" style="background:${bg}">
+      <span>${escapeHtml(book.title)}</span><small>${escapeHtml(book.author || "")}</small></div>`;
+  }
+
+  function stars(rating) {
+    const value = Number(rating || 0);
+    if (!value) return `<span class="muted small">暂无评分</span>`;
+    return `<span class="rating" title="${value}">★ ${value.toFixed(1)}</span>`;
+  }
+
+  function card(book, index) {
+    return `
+      <article class="book-card">
+        <a class="book-cover" href="/books/${book.id}" aria-label="查看《${escapeHtml(book.title)}》">
+          ${cover(book, index)}
+          ${book.chapter_count ? `<span class="cover-badge">可检索</span>` : ""}
+        </a>
+        <div class="book-body">
+          <div class="book-top">${stars(book.rating)}<span class="book-meta">${book.total_minutes ? Math.round(book.total_minutes / 60) + " 小时" : ""}</span></div>
+          <h3><a href="/books/${book.id}">${escapeHtml(book.title)}</a></h3>
+          <p class="book-meta">${escapeHtml(book.author || "")}${book.category ? ` · ${escapeHtml(book.category)}` : ""}</p>
+          <p class="book-reason clamp-3">${escapeHtml(book.intro || "")}</p>
+          <div class="tag-row">${(book.tags || []).slice(0, 3).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("")}</div>
+          <div class="book-actions">
+            <a class="btn btn-primary btn-sm" href="/books/${book.id}">查看解析</a>
+            <a class="btn btn-ghost btn-sm" href="/plans/new?book_id=${book.id}">排计划</a>
+          </div>
+        </div>
+      </article>`;
+  }
+
+  async function loadCategories() {
+    try {
+      const rows = await api.get("/books/categories");
+      const list = Array.isArray(rows) ? rows : (rows?.items || []);
+      categoryChips.innerHTML = `<button class="chip chip-btn ${!state.category ? "active" : ""}" type="button" data-category="">全部</button>` +
+        list.map((c) => {
+          const name = typeof c === "string" ? c : (c.category || c.name || "");
+          const count = typeof c === "string" ? "" : (c.count || "");
+          return `<button class="chip chip-btn ${state.category === name ? "active" : ""}" type="button" data-category="${escapeHtml(name)}">
+            ${escapeHtml(name)}${count ? `<span class="chip-count">${count}</span>` : ""}</button>`;
+        }).join("");
+      bindChips();
+    } catch {
+      /* 分类失败不影响书目 */
+    }
+  }
+
+  function bindChips() {
+    categoryChips.querySelectorAll("[data-category]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.category = btn.dataset.category;
+        state.page = 1;
+        categoryChips.querySelectorAll("[data-category]").forEach((el) => el.classList.toggle("active", el === btn));
+        load();
+      });
+    });
+  }
+
+  async function load() {
+    showAlert(alertBox, "");
+    const params = new URLSearchParams({ page: state.page, page_size: state.pageSize, sort: state.sort });
+    if (state.q) params.set("q", state.q);
+    if (state.category) params.set("category", state.category);
+    if (state.difficulty) params.set("difficulty", state.difficulty);
+    try {
+      const data = await api.get(`/books?${params}`);
+      state.total = data.total;
+      if (!data.items.length) {
+        grid.innerHTML = `<div class="empty-state span-all"><h2>没有找到匹配的书</h2>
+          <p class="muted">换个关键词，或清空筛选条件再试试。</p>
+          <button class="btn btn-ghost" type="button" id="reset-filter">清空筛选</button></div>`;
+        grid.querySelector("#reset-filter")?.addEventListener("click", () => {
+          state.q = ""; searchInput.value = ""; state.category = ""; state.difficulty = "";
+          difficultySelect.value = ""; state.page = 1;
+          categoryChips.querySelectorAll("[data-category]").forEach((el) => el.classList.toggle("active", !el.dataset.category));
+          load();
+        });
+      } else {
+        grid.innerHTML = data.items.map(card).join("");
+      }
+      renderPager(data);
+      const url = new URL(location.href);
+      state.q ? url.searchParams.set("q", state.q) : url.searchParams.delete("q");
+      state.category ? url.searchParams.set("category", state.category) : url.searchParams.delete("category");
+      url.searchParams.set("page", String(state.page));
+      history.replaceState(null, "", url);
+    } catch (err) {
+      grid.innerHTML = "";
+      showAlert(alertBox, err.message || "书目加载失败");
+    }
+  }
+
+  function renderPager(data) {
+    const pages = Math.max(1, Math.ceil(data.total / data.page_size));
+    if (pages <= 1) { pager.innerHTML = ""; return; }
+    const current = data.page;
+    const nums = [];
+    for (let i = Math.max(1, current - 2); i <= Math.min(pages, current + 2); i += 1) nums.push(i);
+    pager.innerHTML = `
+      <button class="btn btn-ghost btn-sm" type="button" data-page="${current - 1}" ${current <= 1 ? "disabled" : ""}>上一页</button>
+      ${nums.map((n) => `<button class="btn ${n === current ? "btn-primary" : "btn-ghost"} btn-sm" type="button" data-page="${n}">${n}</button>`).join("")}
+      <button class="btn btn-ghost btn-sm" type="button" data-page="${current + 1}" ${current >= pages ? "disabled" : ""}>下一页</button>
+      <span class="muted small">共 ${data.total} 本</span>`;
+    pager.querySelectorAll("[data-page]").forEach((btn) => btn.addEventListener("click", () => {
+      state.page = Number(btn.dataset.page);
+      load();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }));
+  }
+
+  searchInput.addEventListener("input", debounce(() => {
+    state.q = searchInput.value.trim();
+    state.page = 1;
+    load();
+  }, 350));
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { state.q = searchInput.value.trim(); state.page = 1; load(); }
+  });
+  document.getElementById("search-btn")?.addEventListener("click", () => {
+    state.q = searchInput.value.trim(); state.page = 1; load();
+  });
+  sortSelect.addEventListener("change", () => { state.sort = sortSelect.value; state.page = 1; load(); });
+  difficultySelect.addEventListener("change", () => {
+    state.difficulty = difficultySelect.value; state.page = 1; load();
+  });
+
+  loadCategories();
+  load();
+</script>
+{% endblock %}

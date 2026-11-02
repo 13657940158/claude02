@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+
+{% block title %}阅读进度 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="progress-page">
+  <header class="page-head">
+    <div>
+      <p class="eyebrow">MY READING</p>
+      <h1>阅读进度</h1>
+      <p>这里记录你每本书读到哪一章、累计读了多少分钟、连续坚持了几天。进度会随打卡自动更新，也可以手动更正。</p>
+    </div>
+    <div class="page-actions">
+      <a class="btn btn-ghost" href="/plans">导读计划</a>
+      <a class="btn btn-primary" href="/plans/new">开始新计划</a>
+    </div>
+  </header>
+
+  <div id="progress-alert"></div>
+
+  <section class="stat-strip wide" id="progress-stats">
+    <div class="stat"><strong id="ps-finished">—</strong><span>读完的书</span></div>
+    <div class="stat"><strong id="ps-minutes">—</strong><span>累计分钟</span></div>
+    <div class="stat"><strong id="ps-streak">—</strong><span>最长连续天数</span></div>
+    <div class="stat"><strong id="ps-plans">—</strong><span>计划数</span></div>
+    <div class="stat"><strong id="ps-notes">—</strong><span>笔记</span></div>
+  </section>
+
+  <div class="progress-layout">
+    <section class="progress-main">
+      <div class="panel-head">
+        <h2>在读的书</h2>
+        <span class="muted small" id="progress-count"></span>
+      </div>
+      <div id="progress-list" class="progress-list">
+        <div class="skeleton" style="height:110px"></div>
+        <div class="skeleton" style="height:110px"></div>
+      </div>
+    </section>
+
+    <aside class="progress-side">
+      <section class="card">
+        <h3>手动更新进度</h3>
+        <p class="muted small">没走计划、自己读的时候，可以在这里记下读到第几章或百分比。</p>
+        <form id="manual-progress">
+          <div class="field">
+            <label for="mp-book">书</label>
+            <select class="select" id="mp-book"></select>
+          </div>
+          <div class="form-row">
+            <div class="field">
+              <label for="mp-chapter">读到第几章</label>
+              <input class="input" id="mp-chapter" type="number" min="0" max="10000" placeholder="如 3">
+            </div>
+            <div class="field">
+              <label for="mp-percent">完成百分比</label>
+              <input class="input" id="mp-percent" type="number" min="0" max="100" placeholder="如 40">
+            </div>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit" id="mp-submit">更新进度</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h3>阅读历史</h3>
+        <ul class="history-list" id="history-list">
+          <li class="skeleton" style="height:44px"></li>
+        </ul>
+      </section>
+    </aside>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, requireLogin, escapeHtml, showAlert, toast, setBusy, formatDate } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const me = requireLogin();
+  const list = document.getElementById("progress-list");
+  const alertBox = document.getElementById("progress-alert");
+  const bookSelect = document.getElementById("mp-book");
+  const STATUS_NAMES = { reading: "在读", finished: "已读完", paused: "已暂停" };
+
+  function progressCard(row) {
+    const pct = Math.max(0, Math.min(100, Number(row.percent || 0)));
+    return `
+      <article class="progress-card">
+        <div class="progress-card-main">
+          <div class="progress-card-top">
+            <h3><a href="/books/${row.book_id}">《${escapeHtml(row.book_title || "未命名")}》</a></h3>
+            <span class="status-pill status-${row.percent >= 100 ? "completed" : "active"}">${STATUS_NAMES[row.status] || (row.percent >= 100 ? "已读完" : "在读")}</span>
+          </div>
+          <div class="progress"><span style="width:${pct}%"></span></div>
+          <div class="progress-meta">
+            <span>${pct}%${row.chapter_no ? ` · 读到第 ${row.chapter_no} 章` : ""}</span>
+            <span>累计 ${row.total_minutes || 0} 分钟</span>
+            <span>连续 ${row.streak_days || 0} 天</span>
+            ${row.last_read_date ? `<span class="muted">最近 ${formatDate(row.last_read_date)}</span>` : ""}
+          </div>
+        </div>
+        <div class="progress-card-actions">
+          ${row.plan_id ? `<a class="btn btn-ghost btn-sm" href="/plans/${row.plan_id}">计划</a>` : ""}
+          <a class="btn btn-ghost btn-sm" href="/notes?book_id=${row.book_id}">笔记</a>
+        </div>
+      </article>`;
+  }
+
+  async function loadStats() {
+    try {
+      const s = await api.get("/stats");
+      document.getElementById("ps-finished").textContent = s.finished_books ?? 0;
+      document.getElementById("ps-minutes").textContent = s.total_minutes ?? 0;
+      document.getElementById("ps-streak").textContent = s.streak_days ?? 0;
+      document.getElementById("ps-plans").textContent = s.plans ?? 0;
+      document.getElementById("ps-notes").textContent = s.notes ?? 0;
+    } catch { /* 不阻断 */ }
+  }
+
+  async function loadProgress() {
+    try {
+      const rows = await api.get("/progress?limit=50");
+      document.getElementById("progress-count").textContent = `${rows.length} 本书`;
+      list.innerHTML = rows.length ? rows.map(progressCard).join("") : `
+        <div class="empty-state"><h2>还没有阅读进度</h2>
+          <p class="muted">打开一个导读计划并打卡，或在上方手动记录，进度会出现在这里。</p>
+          <a class="btn btn-primary" href="/plans/new">新建导读计划</a></div>`;
+    } catch (err) {
+      list.innerHTML = "";
+      showAlert(alertBox, err.message || "进度加载失败");
+    }
+  }
+
+  async function loadHistory() {
+    const box = document.getElementById("history-list");
+    try {
+      const rows = await api.get("/history?limit=20");
+      box.innerHTML = rows.length ? rows.map((h) => `
+        <li class="history-item">
+          <div><a href="/plans/${h.plan_id || ""}">《${escapeHtml(h.book_title || "")}》</a>
+            <span class="small muted">${h.finished_at ? `读完于 ${formatDate(h.finished_at)}` : h.started_at ? `开始于 ${formatDate(h.started_at)}` : ""}</span></div>
+          <span class="small">${h.minutes_total || 0} 分钟</span>
+        </li>`).join("") : `<li class="muted small">暂无历史记录。</li>`;
+    } catch {
+      box.innerHTML = `<li class="muted small">历史加载失败。</li>`;
+    }
+  }
+
+  async function loadBookOptions() {
+    try {
+      const data = await api.get("/books?page_size=50&sort=title");
+      bookSelect.innerHTML = `<option value="">选择一本书</option>` +
+        (data.items || []).map((b) => `<option value="${b.id}">《${escapeHtml(b.title)}》</option>`).join("");
+    } catch { /* 忽略 */ }
+  }
+
+  document.getElementById("manual-progress")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const bookId = Number(bookSelect.value);
+    if (!bookId) { toast("请先选择一本书", "warn"); return; }
+    const chapter = document.getElementById("mp-chapter").value;
+    const percent = document.getElementById("mp-percent").value;
+    if (chapter === "" && percent === "") { toast("至少填写章节或百分比", "warn"); return; }
+    const btn = document.getElementById("mp-submit");
+    setBusy(btn, true, "更新中…");
+    try {
+      await api.post("/progress", {
+        book_id: bookId,
+        chapter_no: chapter === "" ? null : Number(chapter),
+        percent: percent === "" ? null : Number(percent),
+      });
+      toast("进度已更新", "ok");
+      event.target.reset();
+      loadProgress();
+      loadStats();
+    } catch (err) {
+      toast(err.message || "更新失败", "bad");
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  if (me) {
+    loadStats();
+    loadProgress();
+    loadHistory();
+    loadBookOptions();
+  }
+</script>
+{% endblock %}

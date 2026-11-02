@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+
+{% block title %}新建导读计划 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="plan-new" id="plan-new-root">
+  <nav class="breadcrumb" aria-label="面包屑">
+    <a href="/plans">导读计划</a><span>/</span><span>新建</span>
+  </nav>
+  <header class="page-head">
+    <div>
+      <p class="eyebrow">PLAN BUILDER</p>
+      <h1>把一本书拆成每天读得完的任务</h1>
+      <p>选书、选天数、算一下每天读多久。生成后可以随时查看、打卡，伴读会跟着你的进度走。</p>
+    </div>
+  </header>
+
+  <div id="plan-new-alert"></div>
+
+  <form class="plan-form" id="plan-form">
+    <section class="plan-step">
+      <div class="step-head">
+        <span class="step-no">01</span>
+        <div>
+          <h2>选一本书</h2>
+          <p class="muted small">只有已入库原文的书可以生成导读计划；未入库的书只能查看拆书解析。</p>
+        </div>
+      </div>
+      <div class="book-picker">
+        <div class="search-box">
+          <input class="input" id="book-picker-search" type="search" placeholder="搜索书名或作者" aria-label="搜索书籍">
+        </div>
+        <div class="picked-book" id="picked-book" hidden>
+          <div class="picked-cover" id="picked-cover"></div>
+          <div class="picked-info">
+            <strong id="picked-title"></strong>
+            <p class="muted small" id="picked-meta"></p>
+          </div>
+          <button class="btn btn-ghost btn-sm" type="button" id="change-book">换一本</button>
+        </div>
+        <div class="book-pick-grid" id="book-pick-grid">
+          <div class="skeleton" style="height:96px"></div>
+          <div class="skeleton" style="height:96px"></div>
+          <div class="skeleton" style="height:96px"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="plan-step">
+      <div class="step-head">
+        <span class="step-no">02</span>
+        <div>
+          <h2>排几天、每天多久</h2>
+          <p class="muted small">建议选一个真实能坚持的时长。计划本身会按章节顺序切分，避免一天塞太多。</p>
+        </div>
+      </div>
+      <div class="plan-options">
+        <div class="option-block">
+          <label class="option-label" for="days-range">阅读天数</label>
+          <div class="range-row">
+            <input type="range" id="days-range" min="3" max="30" step="1" value="7">
+            <output id="days-out">7 天</output>
+          </div>
+          <div class="preset-row" id="day-presets">
+            <button class="chip chip-btn" type="button" data-days="3">3 天速读</button>
+            <button class="chip chip-btn active" type="button" data-days="7">7 天一周</button>
+            <button class="chip chip-btn" type="button" data-days="14">14 天两周</button>
+            <button class="chip chip-btn" type="button" data-days="21">21 天习惯</button>
+          </div>
+        </div>
+        <div class="option-block">
+          <label class="option-label" for="minutes-range">每天阅读</label>
+          <div class="range-row">
+            <input type="range" id="minutes-range" min="10" max="120" step="5" value="30">
+            <output id="minutes-out">30 分钟</output>
+          </div>
+          <p class="muted small" id="load-estimate">选一本书后，这里会估算每天的阅读负荷。</p>
+        </div>
+        <div class="option-block">
+          <label class="option-label" for="start-date">开始日期</label>
+          <input class="input" id="start-date" type="date">
+          <p class="muted small">留空则从今天开始。打卡按天累计，不要求连续。</p>
+        </div>
+        <div class="option-block">
+          <label class="option-label">计划生成方式</label>
+          <label class="inline-check"><input type="checkbox" id="use-llm" checked> 使用在线模型生成每日重点与思考题</label>
+          <p class="muted small">取消勾选则按章节与字数均分，速度更快；模型不可用时也会自动降级。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="plan-step">
+      <div class="step-head">
+        <span class="step-no">03</span>
+        <div>
+          <h2>确认生成</h2>
+          <p class="muted small">生成后计划会出现在「导读计划」里，第一天的任务会同步到阅读进度。</p>
+        </div>
+      </div>
+      <div class="plan-confirm">
+        <dl class="confirm-facts" id="confirm-facts">
+          <div><dt>书籍</dt><dd id="confirm-book">未选择</dd></div>
+          <div><dt>天数</dt><dd id="confirm-days">7 天</dd></div>
+          <div><dt>每天</dt><dd id="confirm-minutes">30 分钟</dd></div>
+          <div><dt>预计总量</dt><dd id="confirm-total">—</dd></div>
+        </dl>
+        <button class="btn btn-primary btn-lg" type="submit" id="create-plan-btn" disabled>生成导读计划</button>
+        <p class="muted small center">生成大约需要 10-30 秒，请勿重复点击。</p>
+      </div>
+    </section>
+  </form>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, requireLogin, escapeHtml, showAlert, toast, setBusy, debounce, queryParam } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const me = requireLogin();
+  const form = document.getElementById("plan-form");
+  const alertBox = document.getElementById("plan-new-alert");
+  const grid = document.getElementById("book-pick-grid");
+  const search = document.getElementById("book-picker-search");
+  const daysRange = document.getElementById("days-range");
+  const minutesRange = document.getElementById("minutes-range");
+  const submitBtn = document.getElementById("create-plan-btn");
+  const COVER_COLORS = ["#dfe9e3", "#efe4d4", "#e3e0ef", "#e9dfe4", "#dfe7ef", "#e8ead9"];
+
+  const state = { book: null, books: [], query: "" };
+
+  function today() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  function renderPicked() {
+    const picked = document.getElementById("picked-book");
+    if (!state.book) { picked.hidden = true; grid.hidden = false; return; }
+    picked.hidden = false;
+    grid.hidden = true;
+    document.getElementById("picked-title").textContent = `《${state.book.title}》`;
+    document.getElementById("picked-meta").textContent =
+      `${state.book.author || ""} · ${state.book.chapter_count || 0} 章 · ${state.book.total_minutes ? Math.round(state.book.total_minutes / 60) + " 小时" : "时长未知"}`;
+    const cover = document.getElementById("picked-cover");
+    cover.style.background = COVER_COLORS[state.book.id % COVER_COLORS.length];
+    cover.innerHTML = state.book.cover_url
+      ? `<img src="${escapeHtml(state.book.cover_url)}" alt="">`
+      : `<span>${escapeHtml(state.book.title)}</span>`;
+    updateConfirm();
+  }
+
+  function renderBooks() {
+    if (!state.books.length) {
+      grid.innerHTML = `<p class="muted pad-12">没有匹配的书。试试在书架里搜索，或先让管理员入库原文。</p>`;
+      return;
+    }
+    grid.innerHTML = state.books.map((book) => `
+      <button class="book-pick ${book.chapter_count ? "" : "disabled"}" type="button"
+        data-book="${book.id}" ${book.chapter_count ? "" : "disabled"}>
+        <span class="pick-title">《${escapeHtml(book.title)}》</span>
+        <span class="pick-meta">${escapeHtml(book.author || "")} · ${book.chapter_count ? `可检索 · ${book.chapter_count} 章` : "未入库原文"}</span>
+      </button>`).join("");
+    grid.querySelectorAll("[data-book]:not([disabled])").forEach((btn) => btn.addEventListener("click", async () => {
+      const book = state.books.find((b) => b.id === Number(btn.dataset.book));
+      if (book) {
+        try {
+          state.book = await api.get(`/books/${book.id}`);
+        } catch {
+          state.book = book;
+        }
+        renderPicked();
+        toast(`已选择《${book.title}》`, "ok");
+      }
+    }));
+  }
+
+  async function loadBooks() {
+    const params = new URLSearchParams({ page: "1", page_size: "24", sort: "rating" });
+    if (state.query) params.set("q", state.query);
+    try {
+      const data = await api.get(`/books?${params}`);
+      state.books = data.items || [];
+      renderBooks();
+    } catch (err) {
+      grid.innerHTML = `<div class="alert error">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function updateConfirm() {
+    const days = Number(daysRange.value);
+    const minutes = Number(minutesRange.value);
+    document.getElementById("confirm-book").textContent = state.book ? `《${state.book.title}》` : "未选择";
+    document.getElementById("confirm-days").textContent = `${days} 天`;
+    document.getElementById("confirm-minutes").textContent = `${minutes} 分钟`;
+    const totalMinutes = state.book?.total_minutes || 0;
+    document.getElementById("confirm-total").textContent = totalMinutes
+      ? `原书约 ${Math.round(totalMinutes / 60)} 小时，计划可容纳 ${Math.round((days * minutes) / 60 * 10) / 10} 小时`
+      : `${days * minutes} 分钟`;
+    submitBtn.disabled = !state.book;
+    const need = state.book?.total_minutes || 0;
+    const capacity = days * minutes;
+    const estimate = document.getElementById("load-estimate");
+    if (!need) {
+      estimate.textContent = "选一本书后，这里会估算每天的阅读负荷。";
+    } else if (capacity < need * 0.7) {
+      estimate.textContent = `计划时间（${Math.round(capacity / 60)} 小时）少于全书预计时长（${Math.round(need / 60)} 小时），可能需要加天数或加时长，或接受精读节选。`;
+    } else {
+      estimate.textContent = `每天约读 ${Math.round(need / (days * 60) * 10) / 10} 小时的原书内容，比较从容。`;
+    }
+  }
+
+  daysRange.addEventListener("input", () => {
+    document.getElementById("days-out").textContent = `${daysRange.value} 天`;
+    document.querySelectorAll("#day-presets [data-days]").forEach((el) => el.classList.toggle("active", el.dataset.days === daysRange.value));
+    updateConfirm();
+  });
+  minutesRange.addEventListener("input", () => {
+    document.getElementById("minutes-out").textContent = `${minutesRange.value} 分钟`;
+    updateConfirm();
+  });
+  document.getElementById("day-presets")?.querySelectorAll("[data-days]").forEach((btn) => btn.addEventListener("click", () => {
+    daysRange.value = btn.dataset.days;
+    daysRange.dispatchEvent(new Event("input"));
+  }));
+  document.getElementById("change-book")?.addEventListener("click", () => {
+    state.book = null;
+    renderPicked();
+  });
+  search?.addEventListener("input", debounce(() => { state.query = search.value.trim(); loadBooks(); }, 350));
+  document.getElementById("start-date").value = "";
+
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    showAlert(alertBox, "");
+    if (!state.book) { showAlert(alertBox, "请先选择一本书"); return; }
+    setBusy(submitBtn, true, "正在生成计划…");
+    try {
+      const start = document.getElementById("start-date").value;
+      const plan = await api.post("/plans", {
+        book_id: state.book.id,
+        days: Number(daysRange.value),
+        daily_minutes: Number(minutesRange.value),
+        start_date: start || null,
+        use_llm: document.getElementById("use-llm").checked,
+      });
+      if (plan.degraded) toast("在线模型繁忙，已按章节与字数均分生成", "warn");
+      else toast("导读计划已生成", "ok");
+      location.assign(`/plans/${plan.id}`);
+    } catch (err) {
+      showAlert(alertBox, err.message || "计划生成失败");
+      setBusy(submitBtn, false);
+    }
+  });
+
+  (async function boot() {
+    if (!me) return;
+    const preset = Number(queryParam("book_id", "0")) || 0;
+    if (preset) {
+      try {
+        state.book = await api.get(`/books/${preset}`);
+        renderPicked();
+      } catch {
+        state.book = null;
+      }
+    }
+    await loadBooks();
+    updateConfirm();
+  })();
+</script>
+{% endblock %}

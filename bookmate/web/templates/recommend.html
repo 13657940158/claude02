@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+
+{% block title %}为你推荐 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="recommend-page" id="recommend-root">
+  <header class="page-head recommend-head">
+    <div>
+      <p class="eyebrow">FOR YOU</p>
+      <h1>这两周，读这几本</h1>
+      <p>推荐会同时参考你的性格画像、阅读目标、每天可读时间，以及你点过的「喜欢 / 不适合」。越用越贴近你。</p>
+    </div>
+    <div class="recommend-actions">
+      <button class="btn btn-ghost" type="button" id="refresh-recommend">换一批</button>
+      <a class="btn btn-ghost" href="/onboarding">调整画像</a>
+    </div>
+  </header>
+
+  <div id="recommend-alert"></div>
+
+  <section class="profile-strip" id="profile-strip" hidden>
+    <div class="profile-strip-body">
+      <span class="mini-avatar">墨</span>
+      <div>
+        <strong id="profile-summary">阅读画像</strong>
+        <p class="muted small" id="profile-meta"></p>
+      </div>
+    </div>
+    <div class="tag-row" id="profile-traits"></div>
+  </section>
+
+  <section class="recommend-summary" id="recommend-summary" hidden></section>
+
+  <div id="recommend-list" class="recommend-list" aria-live="polite">
+    <div class="skeleton" style="height:180px"></div>
+    <div class="skeleton" style="height:180px"></div>
+    <div class="skeleton" style="height:180px"></div>
+  </div>
+
+  <section class="recommend-tips">
+    <h2>怎么用这份书单</h2>
+    <div class="grid-3">
+      <article class="card tip-card">
+        <span class="step-no">01</span>
+        <h3>先看推荐理由</h3>
+        <p>每本书的推荐理由会说明它和你的哪一点匹配：目标、性格、难度或阅读时长。理由比分数更值得看。</p>
+      </article>
+      <article class="card tip-card">
+        <span class="step-no">02</span>
+        <h3>挑一本排计划</h3>
+        <p>把书拆成每天 20-30 分钟的小任务，比「有空再读」更容易坚持。计划可以随时暂停或调整。</p>
+      </article>
+      <article class="card tip-card">
+        <span class="step-no">03</span>
+        <h3>告诉我们准不准</h3>
+        <p>点「喜欢」或「不适合」，之后的推荐会避开你不想要的类型，减少无效推荐。</p>
+      </article>
+    </div>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, requireLogin, escapeHtml, showAlert, toast, setBusy, queryParam } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const me = requireLogin();
+  const list = document.getElementById("recommend-list");
+  const alertBox = document.getElementById("recommend-alert");
+  const summaryBox = document.getElementById("recommend-summary");
+  const strip = document.getElementById("profile-strip");
+  const refreshBtn = document.getElementById("refresh-recommend");
+  const state = { profile: null, items: [], feedback: new Map(), busy: false };
+
+  const COVER_COLORS = ["#dfe9e3", "#efe4d4", "#e3e0ef", "#e9dfe4", "#dfe7ef", "#e8ead9"];
+  const FACTOR_LABELS = {
+    goal: "目标匹配",
+    interest: "兴趣相关",
+    personality: "性格适配",
+    difficulty: "难度合适",
+    time: "时间匹配",
+    feedback: "反馈偏好",
+    rule_score: "综合分",
+  };
+
+  function cover(book) {
+    if (book.cover_url) return `<img src="${escapeHtml(book.cover_url)}" alt="">`;
+    return `<div class="cover-fallback" style="background:${COVER_COLORS[(book.id || 0) % COVER_COLORS.length]}">
+      <span>${escapeHtml(book.title || "")}</span><small>${escapeHtml(book.author || "")}</small></div>`;
+  }
+
+  function factorChips(factors) {
+    const rows = Object.entries(factors || {})
+      .filter(([key, value]) => FACTOR_LABELS[key] && typeof value === "number")
+      .slice(0, 4);
+    return rows.map(([key, value]) => `<span class="factor ${value >= 0 ? "plus" : "minus"}">${FACTOR_LABELS[key]} ${value >= 0 ? "+" : ""}${value}</span>`).join("");
+  }
+
+  function renderProfile(profile) {
+    if (!profile) return;
+    strip.hidden = false;
+    document.getElementById("profile-summary").textContent = profile.summary || "你的阅读画像";
+    document.getElementById("profile-meta").textContent =
+      `${profile.goal_label || profile.goal || "阅读"} · ${profile.level_label || profile.level || ""} · 每天 ${profile.daily_minutes || 30} 分钟`;
+    document.getElementById("profile-traits").innerHTML = (profile.traits || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("");
+  }
+
+  function actionButtons(book) {
+    const picked = state.feedback.get(book.id);
+    const actions = [
+      { key: "like", label: "喜欢", icon: "👍" },
+      { key: "dislike", label: "不适合", icon: "👎" },
+      { key: "save", label: "稍后读", icon: "🔖" },
+    ];
+    return actions.map((a) => `
+      <button class="btn btn-ghost btn-sm feedback-btn ${picked === a.key ? "active" : ""}"
+        type="button" data-feedback="${a.key}" data-book="${book.id}" ${picked ? "disabled" : ""}>
+        <span aria-hidden="true">${a.icon}</span> ${a.label}
+      </button>`).join("");
+  }
+
+  function card(item, index) {
+    const book = item;
+    const minutes = book.total_minutes ? Math.round(book.total_minutes / 60) : null;
+    return `
+      <article class="recommend-card" style="--stagger:${index * 40}ms">
+        <div class="recommend-rank">${String(item.rank || index + 1).padStart(2, "0")}</div>
+        <a class="recommend-cover" href="/books/${book.id}" aria-label="查看《${escapeHtml(book.title)}》">${cover(book)}</a>
+        <div class="recommend-body">
+          <div class="recommend-title-row">
+            <div>
+              <h2><a href="/books/${book.id}">${escapeHtml(book.title)}</a></h2>
+              <p class="book-meta">${escapeHtml(book.author || "")}${book.category ? ` · ${escapeHtml(book.category)}` : ""}${minutes ? ` · 约 ${minutes} 小时` : ""}</p>
+            </div>
+            <div class="score-badge" title="推荐综合分">
+              <strong>${Math.round(item.score || 0)}</strong><span>匹配分</span>
+            </div>
+          </div>
+          <p class="recommend-reason">${escapeHtml(item.reason || "与你当前的阅读目标和时间安排比较匹配。")}</p>
+          <div class="tag-row">${(book.tags || []).slice(0, 4).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("")}
+            ${book.difficulty ? `<span class="tag tag-dim">难度 ${book.difficulty}/5</span>` : ""}</div>
+          <div class="factor-row">${factorChips(item.factors)}</div>
+          <div class="recommend-actions">
+            <a class="btn btn-primary btn-sm" href="/plans/new?book_id=${book.id}">排导读计划</a>
+            <a class="btn btn-ghost btn-sm" href="/chat?book_id=${book.id}">问问这本书</a>
+            ${actionButtons(book)}
+          </div>
+        </div>
+      </article>`;
+  }
+
+  function bindFeedback() {
+    list.querySelectorAll("[data-feedback]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const bookId = Number(btn.dataset.book);
+        const action = btn.dataset.feedback;
+        list.querySelectorAll(`[data-book="${bookId}"][data-feedback]`).forEach((el) => { el.disabled = true; });
+        try {
+          await api.post("/feedback", { book_id: bookId, action });
+          state.feedback.set(bookId, action);
+          btn.classList.add("active");
+          toast(action === "like" ? "已记录：喜欢这本书" : action === "dislike" ? "已记录：下次少推荐这类" : "已加入稍后读", "ok");
+        } catch (err) {
+          list.querySelectorAll(`[data-book="${bookId}"][data-feedback]`).forEach((el) => { el.disabled = false; });
+          toast(err.message || "反馈失败", "bad");
+        }
+      });
+    });
+  }
+
+  function renderItems(payload) {
+    state.items = payload.items || [];
+    summaryBox.hidden = !payload.summary;
+    if (payload.summary) summaryBox.textContent = payload.summary;
+    if (!state.items.length) {
+      list.innerHTML = `<div class="empty-state">
+        <h2>还没有生成推荐</h2>
+        <p class="muted">先完成阅读画像，我们才能按你的性格和目标选书。</p>
+        <a class="btn btn-primary" href="/onboarding">去完成画像</a>
+        <button class="btn btn-ghost" type="button" id="try-generate">已有画像，直接生成</button>
+      </div>`;
+      list.querySelector("#try-generate")?.addEventListener("click", () => load(true));
+      return;
+    }
+    list.innerHTML = state.items.map(card).join("");
+    bindFeedback();
+  }
+
+  async function loadProfile() {
+    try {
+      const data = await api.get("/profile");
+      state.profile = data.completed ? (data.profile || null) : null;
+      if (state.profile) renderProfile(state.profile);
+    } catch {
+      state.profile = null;
+    }
+    return state.profile;
+  }
+
+  async function load(force = false) {
+    if (state.busy) return;
+    state.busy = true;
+    if (force) setBusy(refreshBtn, true, "重新挑选中…");
+    showAlert(alertBox, "");
+    try {
+      if (!state.profile) await loadProfile();
+      if (!state.profile) {
+        list.innerHTML = `<div class="empty-state">
+          <h2>先认识你，再推荐书</h2>
+          <p class="muted">花 3 分钟做一份阅读画像。我们会问你最近的阅读目标、感兴趣的主题和每天能挤出的时间。</p>
+          <a class="btn btn-primary" href="/onboarding">开始阅读画像</a>
+          <a class="btn btn-ghost" href="/books">先自己逛逛书架</a>
+        </div>`;
+        return;
+      }
+      const params = new URLSearchParams({ limit: "5", refresh: force || queryParam("refresh") === "1" ? "true" : "false" });
+      const data = await api.post(`/recommendations?${params}`);
+      renderItems(data);
+      if (data.degraded) {
+        showAlert(alertBox, "在线模型暂时繁忙，当前推荐使用规则打分，理由会偏简短；稍后可点「换一批」重试。", "warn");
+      }
+    } catch (err) {
+      list.innerHTML = "";
+      showAlert(alertBox, err.message || "推荐加载失败，请稍后重试");
+    } finally {
+      state.busy = false;
+      if (force) setBusy(refreshBtn, false);
+    }
+  }
+
+  refreshBtn?.addEventListener("click", () => load(true));
+  if (!me) list.innerHTML = "";
+  else load(false);
+</script>
+{% endblock %}

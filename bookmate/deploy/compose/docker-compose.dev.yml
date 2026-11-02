@@ -1,0 +1,166 @@
+# 本地开发栈：MySQL + Redis + Qdrant + API
+# 用法（在项目根目录）：
+#   docker compose --env-file .env -f deploy/compose/docker-compose.dev.yml up -d --build
+#   docker compose --env-file .env -f deploy/compose/docker-compose.dev.yml logs -f api
+# 说明：所有模型调用走在线 API，本地不启动任何模型/GPU 容器。
+name: bookmate
+
+services:
+  mysql:
+    image: mysql:8.0.40
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+      - --innodb-ft-min-token-size=2
+      - --max_connections=300
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 填写 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-bookmate}
+      MYSQL_USER: ${MYSQL_USER:-bookmate}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 填写 MYSQL_PASSWORD}
+      TZ: Asia/Shanghai
+    ports:
+      # 宿主机已有 MySQL 占用 3306 时，开发栈用 3307 暴露给宿主工具；
+      # api 容器始终通过服务名 mysql:3306 访问，不受影响。
+      - "${MYSQL_HOST_PORT:-3307}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__ENABLE_STATIC_CONTENT: "true"
+
+  # 一次性迁移：新机器首次启动时建表；已是最新版本时秒退
+  migrate:
+    image: bookmate-api:${IMAGE_TAG:-dev}
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: mysql+aiomysql://${MYSQL_USER:-bookmate}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-bookmate}?charset=utf8mb4
+      DATABASE_SYNC_URL: mysql+pymysql://${MYSQL_USER:-bookmate}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-bookmate}?charset=utf8mb4
+    command: ["alembic", "upgrade", "head"]
+    volumes:
+      - ../../alembic.ini:/app/alembic.ini:ro
+      - ../../migrations:/app/migrations
+      - ../../app:/app/app
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        # 国内网络建议在 .env 覆盖这三项；默认官方源/官方镜像
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        BASE_APT_MIRROR: ${BASE_APT_MIRROR:-}
+    image: bookmate-api:${IMAGE_TAG:-dev}
+    env_file:
+      - ../../.env
+    environment:
+      # 容器内使用服务名访问依赖；其余变量沿用 .env
+      DATABASE_URL: mysql+aiomysql://${MYSQL_USER:-bookmate}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-bookmate}?charset=utf8mb4
+      DATABASE_SYNC_URL: mysql+pymysql://${MYSQL_USER:-bookmate}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-bookmate}?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      CORPUS_DIR: /app/data/books
+    # 开发期以 root 运行，避免 Windows 绑定挂载与 __pycache__ 权限问题；生产镜像默认非 root
+    user: "0:0"
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/app
+      - --reload-dir
+      - /app/web
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../../app:/app/app
+      - ../../alembic.ini:/app/alembic.ini:ro
+      - ../../migrations:/app/migrations
+      - ../../web:/app/web
+      - ../../scripts:/app/scripts
+      - ../../tests:/app/tests
+      - ../../eval:/app/eval
+      - ../../data:/app/data
+      - ../../.env:/app/.env:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+  # 语料巡检：把新书丢进 data/books 后自动入库（也可手动 python -m app.workers.corpus_worker --once）
+  worker:
+    image: bookmate-api:${IMAGE_TAG:-dev}
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: mysql+aiomysql://${MYSQL_USER:-bookmate}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-bookmate}?charset=utf8mb4
+      DATABASE_SYNC_URL: mysql+pymysql://${MYSQL_USER:-bookmate}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-bookmate}?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      CORPUS_DIR: /app/data/books
+      # 开发期每 5 分钟扫一次，方便演示“丢文件即入库”
+      CORPUS_WATCH_SECONDS: ${CORPUS_WATCH_SECONDS:-300}
+    user: "0:0"
+    command: ["python", "-m", "app.workers.corpus_worker"]
+    # 镜像自带的 HEALTHCHECK 探测 8000 端口，worker 不提供 HTTP，必须关掉
+    healthcheck:
+      disable: true
+    volumes:
+      - ../../app:/app/app
+      - ../../web:/app/web
+      - ../../scripts:/app/scripts
+      - ../../data:/app/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+volumes:
+  mysql_data:
+  redis_data:
+  qdrant_data:

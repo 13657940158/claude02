@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+
+{% block title %}导读计划详情 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="plan-detail" id="plan-detail-root">
+  <nav class="breadcrumb" aria-label="面包屑">
+    <a href="/plans">导读计划</a><span>/</span><span id="crumb-book">详情</span>
+  </nav>
+  <div id="plan-detail-body">
+    <div class="skeleton" style="height:260px"></div>
+    <div class="skeleton" style="height:320px;margin-top:18px"></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, requireLogin, escapeHtml, showAlert, toast, setBusy, formatDate, queryParam } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const me = requireLogin();
+  const root = document.getElementById("plan-detail-root");
+  const body = document.getElementById("plan-detail-body");
+  const planId = Number(location.pathname.split("/").filter(Boolean).pop());
+  let current = null;
+
+  function statusLabel(status) {
+    return { active: "进行中", completed: "已完成", paused: "已暂停" }[status] || status;
+  }
+
+  function sessionRow(session, plan) {
+    const isCurrent = session.day_no === plan.current_day && session.status !== "done";
+    const isDone = session.status === "done";
+    return `
+      <li class="session-row ${isDone ? "done" : ""} ${isCurrent ? "current" : ""}" id="day-${session.day_no}">
+        <div class="session-day">
+          <strong>第 ${session.day_no} 天</strong>
+          ${isCurrent ? `<span class="badge badge-current">今天</span>` : ""}
+          ${isDone ? `<span class="badge badge-done">已打卡</span>` : ""}
+        </div>
+        <div class="session-main">
+          <h3>${escapeHtml(session.title || `阅读第 ${session.chapter_from}-${session.chapter_to} 章`)}</h3>
+          <p class="session-range">第 ${session.chapter_from}-${session.chapter_to} 章 · 约 ${session.minutes} 分钟${session.minutes_spent ? ` · 实际 ${session.minutes_spent} 分钟` : ""}</p>
+          ${session.focus ? `<p class="session-focus">${escapeHtml(session.focus)}</p>` : ""}
+          ${(session.questions || []).length ? `<details class="session-questions"><summary>当天思考题（${session.questions.length}）</summary>
+            <ol>${session.questions.map((q) => `<li>${escapeHtml(typeof q === "string" ? q : q.text || "")}</li>`).join("")}</ol></details>` : ""}
+          ${isDone ? `<p class="muted small">完成于 ${formatDate(session.completed_at) || "—"}</p>` : ""}
+        </div>
+        <div class="session-action">
+          ${isDone ? `<span class="check-mark" aria-label="已完成">✓</span>` : `
+            <button class="btn ${isCurrent ? "btn-primary" : "btn-ghost"} btn-sm" type="button"
+              data-checkin="${session.day_no}" data-minutes="${session.minutes}">打卡</button>`}
+        </div>
+      </li>`;
+  }
+
+  function render(plan) {
+    current = plan;
+    document.getElementById("crumb-book").textContent = `《${plan.book_title}》`;
+    document.title = `《${plan.book_title}》导读计划 · 墨舟`;
+    const pct = Math.max(0, Math.min(100, Number(plan.progress_percent || 0)));
+    const todaySession = (plan.sessions || []).find((s) => s.day_no === plan.current_day) || (plan.sessions || [])[0];
+    const remaining = (plan.sessions || []).filter((s) => s.status !== "done").length;
+    body.innerHTML = `
+      <header class="plan-hero">
+        <div class="plan-hero-cover">
+          <span>${String(plan.completed_sessions || 0).padStart(2, "0")}</span>
+          <small>/ ${plan.days} 天</small>
+        </div>
+        <div class="plan-hero-info">
+          <p class="eyebrow">GUIDED READING PLAN</p>
+          <h1>《${escapeHtml(plan.book_title)}》</h1>
+          <p class="muted">${escapeHtml(plan.author || "")} · ${plan.daily_minutes || 30} 分钟/天 · ${formatDate(plan.start_date) || "今天"}开始</p>
+          <div class="plan-hero-progress">
+            <div class="progress progress-lg"><span style="width:${pct}%"></span></div>
+            <strong>${pct}%</strong>
+          </div>
+          <p class="plan-hero-summary">${escapeHtml(plan.summary || "")}</p>
+          <div class="plan-hero-actions">
+            <a class="btn btn-primary" href="/companion/${plan.id}">和伴读聊聊</a>
+            <a class="btn btn-ghost" href="/books/${plan.book_id}">查看拆书解析</a>
+            <a class="btn btn-ghost" href="/chat?book_id=${plan.book_id}">问客服</a>
+          </div>
+          ${plan.degraded ? `<p class="muted small">本计划由规则按章节与字数均分生成（在线模型当时不可用），内容依然可执行。</p>` : ""}
+        </div>
+        <aside class="plan-hero-side">
+          <div class="side-stat"><strong>${plan.completed_sessions || 0}</strong><span>已打卡</span></div>
+          <div class="side-stat"><strong>${remaining}</strong><span>剩余天数</span></div>
+          <div class="side-stat"><strong>${plan.total_minutes ? Math.round(plan.total_minutes / 60) : "—"}</strong><span>原书小时</span></div>
+          <p class="muted small">状态：${statusLabel(plan.status)}</p>
+        </aside>
+      </header>
+
+      <section class="today-card" id="today-card">
+        <div class="today-head">
+          <div>
+            <p class="eyebrow">TODAY</p>
+            <h2>第 ${plan.current_day} 天 · ${escapeHtml(todaySession?.title || "阅读任务")}</h2>
+            <p class="muted">第 ${todaySession?.chapter_from ?? 1}-${todaySession?.chapter_to ?? 1} 章 · 建议 ${todaySession?.minutes ?? plan.daily_minutes} 分钟</p>
+          </div>
+          ${todaySession && todaySession.status !== "done" ? `
+            <div class="checkin-box">
+              <label for="spent-minutes" class="small">实际阅读</label>
+              <input class="input input-sm" id="spent-minutes" type="number" min="0" max="600" value="${todaySession.minutes || plan.daily_minutes}">
+              <span class="small">分钟</span>
+              <button class="btn btn-primary" type="button" id="today-checkin">完成打卡</button>
+            </div>` : `<span class="badge badge-done">今日已完成</span>`}
+        </div>
+        ${todaySession?.focus ? `<p class="today-focus">${escapeHtml(todaySession.focus)}</p>` : ""}
+        ${(todaySession?.questions || []).length ? `
+          <div class="today-questions">
+            <h3>边读边想</h3>
+            <ol>${todaySession.questions.map((q) => `<li>${escapeHtml(typeof q === "string" ? q : q.text || "")}</li>`).join("")}</ol>
+          </div>` : ""}
+        <div class="today-actions">
+          <button class="btn btn-ghost btn-sm" type="button" id="add-note">记一条笔记</button>
+          <a class="btn btn-ghost btn-sm" href="/companion/${plan.id}">读不懂？问伴读</a>
+        </div>
+        <form class="note-form" id="note-form" hidden>
+          <label for="note-content" class="small">这条笔记会保存到「笔记」并关联第 ${todaySession?.chapter_to ?? 1} 章</label>
+          <textarea class="input" id="note-content" rows="3" maxlength="5000" placeholder="写下你读到这里时的想法、疑问或联想…"></textarea>
+          <div class="row-actions">
+            <button class="btn btn-primary btn-sm" type="submit">保存笔记</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="cancel-note">取消</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="sessions-section">
+        <div class="panel-head">
+          <h2>每日任务</h2>
+          <span class="muted small">共 ${plan.sessions?.length || 0} 天，已完成 ${plan.completed_sessions || 0} 天</span>
+        </div>
+        <ol class="session-list-detail">
+          ${(plan.sessions || []).map((s) => sessionRow(s, plan)).join("") || `<li class="muted pad-12">暂无任务。</li>`}
+        </ol>
+      </section>
+
+      <section class="plan-note-help">
+        <h2>打卡以后</h2>
+        <div class="grid-3">
+          <article class="card"><h3>进度与连续天数</h3><p>进度会按已读章节更新，连续天数按自然日累计。中断一天不会清零历史，但连续记录会从 1 重新开始。</p></article>
+          <article class="card"><h3>拆书与伴读</h3><p>遇到读不懂的句子，可以问伴读；它只检索你已读到的章节，后面的内容会主动避开。</p></article>
+          <article class="card"><h3>笔记留在书里</h3><p>笔记会关联书籍与章节，之后在「笔记」页可以按书筛选、回看，也可以随时删除。</p></article>
+        </div>
+      </section>`;
+    bind(plan);
+  }
+
+  function bind(plan) {
+    body.querySelector("#today-checkin")?.addEventListener("click", async () => {
+      const minutes = Number(document.getElementById("spent-minutes").value || plan.daily_minutes || 30);
+      await checkin(plan.current_day, minutes, document.getElementById("today-checkin"));
+    });
+    body.querySelectorAll("[data-checkin]").forEach((btn) => btn.addEventListener("click", () => {
+      const minutes = Number(btn.dataset.minutes || 30);
+      if (confirm(`确认第 ${btn.dataset.checkin} 天已完成？将记录 ${minutes} 分钟。`)) {
+        checkin(Number(btn.dataset.checkin), minutes, btn);
+      }
+    }));
+    const noteForm = document.getElementById("note-form");
+    document.getElementById("add-note")?.addEventListener("click", () => { noteForm.hidden = false; document.getElementById("note-content").focus(); });
+    document.getElementById("cancel-note")?.addEventListener("click", () => { noteForm.hidden = true; });
+    noteForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const content = document.getElementById("note-content").value.trim();
+      if (!content) return;
+      const today = (plan.sessions || []).find((s) => s.day_no === plan.current_day);
+      const btn = noteForm.querySelector("[type=submit]");
+      setBusy(btn, true, "保存中…");
+      try {
+        await api.post("/notes", { book_id: plan.book_id, content, chapter_no: today?.chapter_to ?? null });
+        toast("笔记已保存", "ok");
+        noteForm.reset();
+        noteForm.hidden = true;
+      } catch (err) {
+        toast(err.message || "笔记保存失败", "bad");
+      } finally {
+        setBusy(btn, false);
+      }
+    });
+  }
+
+  async function checkin(dayNo, minutes, btn) {
+    setBusy(btn, true, "打卡中…");
+    try {
+      await api.post(`/plans/${planId}/checkin?day_no=${dayNo}`, { minutes_spent: minutes });
+      toast(`第 ${dayNo} 天打卡成功`, "ok");
+      await load();
+    } catch (err) {
+      toast(err.message || "打卡失败", "bad");
+      setBusy(btn, false);
+    }
+  }
+
+  async function load() {
+    try {
+      const plan = await api.get(`/plans/${planId}`);
+      render(plan);
+      if (queryParam("checkin") === "1") {
+        document.getElementById("today-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    } catch (err) {
+      body.innerHTML = `<div class="empty-state"><h1>没有找到这个计划</h1>
+        <p class="muted">${escapeHtml(err.message)}</p>
+        <a class="btn btn-primary" href="/plans">回到导读计划</a></div>`;
+    }
+  }
+
+  if (me) load();
+</script>
+{% endblock %}

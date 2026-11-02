@@ -1,0 +1,468 @@
+{% extends "base.html" %}
+
+{% block title %}墨舟客服 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="chat-page" id="chat-root">
+  <aside class="chat-sidebar" id="chat-sidebar" aria-label="会话列表">
+    <div class="chat-sidebar-head">
+      <h2>会话</h2>
+      <button class="btn btn-primary btn-sm" type="button" id="new-chat">新对话</button>
+    </div>
+    <div class="chat-context" id="chat-context" hidden>
+      <span class="context-dot"></span>
+      <div>
+        <p class="small">当前聚焦</p>
+        <strong id="context-title"></strong>
+      </div>
+      <button class="linklike small" type="button" id="clear-context">清除</button>
+    </div>
+    <ul class="session-list" id="session-list">
+      <li class="skeleton" style="height:52px"></li>
+      <li class="skeleton" style="height:52px"></li>
+    </ul>
+    <div class="chat-sidebar-foot">
+      <a class="small" href="/plans">我的导读计划</a>
+      <a class="small" href="/progress">阅读进度</a>
+      <button class="linklike small" type="button" id="open-memory">长期记忆</button>
+    </div>
+  </aside>
+
+  <div class="chat-main">
+    <header class="chat-header">
+      <button class="btn btn-ghost btn-sm chat-menu-btn" type="button" id="toggle-sidebar" aria-label="打开会话列表">☰</button>
+      <div>
+        <h1 id="chat-title">墨舟阅读客服</h1>
+        <p class="muted small" id="chat-subtitle">可以问书里的内容、让我推荐书、排阅读计划，或查听书、课程、文旅信息。</p>
+      </div>
+      <div class="chat-header-actions">
+        <label class="inline-check small"><input type="checkbox" id="memory-toggle" checked> 记住偏好</label>
+      </div>
+    </header>
+
+    <div class="chat-thread" id="chat-thread" role="log" aria-live="polite">
+      <div class="chat-welcome" id="chat-welcome">
+        <div class="welcome-avatar">墨</div>
+        <h2>你好，我是墨舟</h2>
+        <p>你可以像问一位懂书的朋友那样问我。回答会引用原文出处；资料里没有的，我会直说。</p>
+        <div class="suggestion-grid" id="suggestions">
+          <button class="suggestion" type="button" data-q="根据我的画像，推荐两本适合每天读 20 分钟的书">按我的画像推荐书</button>
+          <button class="suggestion" type="button" data-q="《论语》里关于「学而时习之」是什么意思？">解释原文含义</button>
+          <button class="suggestion" type="button" data-q="帮我排一个 7 天的导读计划，每天 30 分钟">帮我排 7 天计划</button>
+          <button class="suggestion" type="button" data-q="《论语》有没有适合通勤听的版本？">找听书版本</button>
+          <button class="suggestion" type="button" data-q="我最近读到哪了？坚持得怎么样？">查看阅读进度</button>
+          <button class="suggestion" type="button" data-q="有哪些和《论语》相关的课程或城市书店？">课程与文旅</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="chat-tools-bar" id="tools-bar" hidden></div>
+
+    <form class="chat-input" id="chat-form">
+      <div class="chat-input-inner">
+        <textarea id="chat-text" rows="1" maxlength="4000" placeholder="输入问题… 例如：道德经里「上善若水」怎么理解？（Enter 发送，Shift+Enter 换行）" aria-label="输入问题"></textarea>
+        <button class="btn btn-primary" type="submit" id="send-btn" aria-label="发送">发送</button>
+      </div>
+      <p class="chat-hint small muted">回答由在线大模型结合原文生成，可能存在偏差；重要内容请以原文与原文出处为准。</p>
+    </form>
+  </div>
+
+  <div class="memory-panel" id="memory-panel" hidden aria-label="长期记忆">
+    <div class="memory-head">
+      <h2>墨舟记住的偏好</h2>
+      <button class="btn btn-ghost btn-sm" type="button" id="close-memory">关闭</button>
+    </div>
+    <p class="muted small">这些是从对话里提炼的长期偏好，用于让推荐更贴近你。你可以逐条删除。</p>
+    <ul id="memory-list"></ul>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, getToken, requireLogin, escapeHtml, toast, relTime, queryParam, renderCitations, citationList, emptyState } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const me = requireLogin();
+  const thread = document.getElementById("chat-thread");
+  const form = document.getElementById("chat-form");
+  const input = document.getElementById("chat-text");
+  const sendBtn = document.getElementById("send-btn");
+  const sessionList = document.getElementById("session-list");
+  const toolsBar = document.getElementById("tools-bar");
+  const welcome = document.getElementById("chat-welcome");
+
+  const state = {
+    sessionId: Number(queryParam("session", "0")) || null,
+    bookId: Number(queryParam("book_id", "0")) || null,
+    bookTitle: "",
+    streaming: false,
+    abort: null,
+  };
+
+  const TOOL_ICONS = {
+    retrieve_content: "📖",
+    recommend_books: "💡",
+    book_analysis: "🧭",
+    reading_progress: "📈",
+    audio_data: "🎧",
+    edu_data: "🎓",
+    travel_data: "🏙️",
+    finance_data: "💰",
+  };
+
+  /* ---------- 侧栏 ---------- */
+  async function loadSessions() {
+    try {
+      const rows = await api.get("/chat/sessions?limit=40");
+      if (!rows.length) {
+        sessionList.innerHTML = `<li class="muted small pad-12">还没有会话，问第一个问题就会自动创建。</li>`;
+        return;
+      }
+      sessionList.innerHTML = rows.map((s) => `
+        <li>
+          <button class="session-item ${s.id === state.sessionId ? "active" : ""}" type="button" data-session="${s.id}">
+            <span class="session-title">${escapeHtml(s.title || "新对话")}</span>
+            <span class="session-meta small muted">${s.message_count || 0} 条 · ${relTime(s.last_message_at)}</span>
+          </button>
+        </li>`).join("");
+      sessionList.querySelectorAll("[data-session]").forEach((btn) => btn.addEventListener("click", () => openSession(Number(btn.dataset.session))));
+    } catch (err) {
+      sessionList.innerHTML = `<li class="muted small pad-12">${escapeHtml(err.message)}</li>`;
+    }
+  }
+
+  async function openSession(id) {
+    state.sessionId = id;
+    sessionList.querySelectorAll("[data-session]").forEach((el) => el.classList.toggle("active", Number(el.dataset.session) === id));
+    welcome.hidden = true;
+    toolsBar.hidden = true;
+    thread.innerHTML = `<div class="skeleton" style="height:80px"></div><div class="skeleton" style="height:120px"></div>`;
+    try {
+      const data = await api.get(`/chat/sessions/${id}?limit=100`);
+      if (!data.messages.length) thread.innerHTML = `<p class="muted center pad-24">这个会话还没有消息。</p>`;
+      else thread.innerHTML = data.messages.map((m) => messageHtml(m)).join("");
+      bindCitationToggles();
+      scrollBottom(false);
+    } catch (err) {
+      thread.innerHTML = `<div class="alert error">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function newChat() {
+    state.sessionId = null;
+    sessionList.querySelectorAll(".session-item").forEach((el) => el.classList.remove("active"));
+    thread.innerHTML = "";
+    welcome.hidden = false;
+    toolsBar.hidden = true;
+    input.focus();
+  }
+
+  /* ---------- 消息渲染 ---------- */
+  function messageHtml(msg) {
+    const role = msg.role === "user" ? "user" : "assistant";
+    const content = role === "user" ? escapeHtml(msg.content) : renderAnswer(msg.content);
+    const cites = role === "assistant" ? citationList(msg.citations || []) : "";
+    const tools = (msg.tool_names || []).map((n) => `<span class="tool-pill">${TOOL_ICONS[n] || "🔧"} ${escapeHtml(toolLabel(n))}</span>`).join("");
+    const flags = [
+      msg.degraded ? `<span class="flag warn">降级回答</span>` : "",
+      msg.blocked ? `<span class="flag bad">已拦截</span>` : "",
+    ].join("");
+    return `
+      <article class="msg msg-${role}" data-msg-id="${msg.id || ""}">
+        <div class="msg-avatar">${role === "user" ? "你" : "墨"}</div>
+        <div class="msg-body">
+          <div class="msg-content">${content}</div>
+          ${cites ? `<details class="msg-cites"><summary>原文出处（${(msg.citations || []).length}）</summary>${cites}</details>` : ""}
+          ${tools ? `<div class="msg-tools">${tools}</div>` : ""}
+          <div class="msg-foot">${flags}<time>${relTime(msg.created_at)}</time></div>
+        </div>
+      </article>`;
+  }
+
+  function renderAnswer(text) {
+    // 轻量渲染：段落 + 列表 + 行内 [n] 引用 -> 上标
+    const safe = escapeHtml(text || "");
+    const withCites = safe.replace(/\[(\d+(?:[,，]\s*\d+)*)\]/g, (_, nums) =>
+      nums.split(/[,，]/).map((n) => `<sup class="cite">[${n.trim()}]</sup>`).join(""));
+    const blocks = withCites.split(/\n{2,}/);
+    return blocks.map((block) => {
+      const lines = block.split("\n").filter(Boolean);
+      if (lines.every((l) => /^\s*(?:[-*•]|\d+[.、])\s+/.test(l))) {
+        return `<ul>${lines.map((l) => `<li>${l.replace(/^\s*(?:[-*•]|\d+[.、])\s+/, "")}</li>`).join("")}</ul>`;
+      }
+      return `<p>${lines.join("<br>")}</p>`;
+    }).join("");
+  }
+
+  const TOOL_LABELS = {
+    retrieve_content: "检索原文",
+    recommend_books: "推荐书目",
+    book_analysis: "拆书解析",
+    reading_progress: "阅读进度",
+    audio_data: "听书数据",
+    edu_data: "教育数据",
+    travel_data: "文旅数据",
+    finance_data: "金融数据",
+  };
+  function toolLabel(name) { return TOOL_LABELS[name] || name; }
+
+  function bindCitationToggles() {
+    thread.querySelectorAll(".cite").forEach((sup) => {
+      if (sup.dataset.bound) return;
+      sup.dataset.bound = "1";
+      sup.title = "查看原文出处";
+      sup.addEventListener("click", () => {
+        const details = sup.closest(".msg-body")?.querySelector(".msg-cites");
+        if (details) details.open = !details.open;
+      });
+    });
+  }
+
+  /* ---------- 工具条 ---------- */
+  function renderTools(tools) {
+    if (!tools || !tools.length) { toolsBar.hidden = true; return; }
+    toolsBar.hidden = false;
+    toolsBar.innerHTML = tools.map((t) => `
+      <span class="tool-status ${t.status === "ok" ? "ok" : "bad"}" title="${escapeHtml(t.summary || "")}">
+        ${TOOL_ICONS[t.name] || "🔧"} ${escapeHtml(t.label || toolLabel(t.name))}
+        <em class="small">${t.latency_ms != null ? `${t.latency_ms}ms` : ""}</em>
+      </span>`).join("");
+  }
+
+  function scrollBottom(smooth = true) {
+    thread.scrollTo({ top: thread.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  }
+
+  function pendingHtml() {
+    return `
+      <article class="msg msg-assistant" id="pending-msg">
+        <div class="msg-avatar">墨</div>
+        <div class="msg-body">
+          <div class="msg-content typing"><span></span><span></span><span></span></div>
+        </div>
+      </article>`;
+  }
+
+  /* ---------- 发送（SSE） ---------- */
+  async function send(text) {
+    if (state.streaming || !text.trim()) return;
+    if (!me) return;
+    state.streaming = true;
+    welcome.hidden = true;
+    sendBtn.disabled = true;
+    toolsBar.hidden = true;
+    const userMsg = { role: "user", content: text.trim(), created_at: new Date().toISOString() };
+    thread.insertAdjacentHTML("beforeend", messageHtml(userMsg));
+    thread.insertAdjacentHTML("beforeend", pendingHtml());
+    scrollBottom();
+
+    const controller = new AbortController();
+    state.abort = controller;
+    let sessionId = state.sessionId;
+    let assistantEl = null;
+    let answer = "";
+    let citations = [];
+    let tools = [];
+    let blocked = false;
+    let degraded = false;
+
+    const ensureAssistant = () => {
+      if (assistantEl) return assistantEl;
+      document.getElementById("pending-msg")?.remove();
+      thread.insertAdjacentHTML("beforeend", `
+        <article class="msg msg-assistant streaming">
+          <div class="msg-avatar">墨</div>
+          <div class="msg-body"><div class="msg-content"></div>
+            <div class="msg-foot"><time>刚刚</time></div></div>
+        </article>`);
+      assistantEl = thread.lastElementChild;
+      return assistantEl;
+    };
+
+    try {
+      const resp = await fetch("/api/v1/chat/messages/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: `Bearer ${getToken()}` },
+        body: JSON.stringify({
+          message: text.trim(),
+          session_id: sessionId,
+          book_id: state.bookId || null,
+          extract_memory: document.getElementById("memory-toggle").checked,
+        }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        let message = `请求失败（${resp.status}）`;
+        try {
+          const body = await resp.json();
+          message = body.message || message;
+        } catch { /* 非 JSON */ }
+        throw new Error(message);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
+        for (const chunk of chunks) {
+          const dataLine = chunk.split("\n").find((line) => line.startsWith("data:"));
+          if (!dataLine) continue;
+          let event;
+          try { event = JSON.parse(dataLine.slice(5).trim()); } catch { continue; }
+          if (event.session_id) { sessionId = event.session_id; state.sessionId = sessionId; }
+          if (event.type === "meta") {
+            citations = event.citations || [];
+            tools = event.tools || [];
+            renderTools(tools);
+          } else if (event.type === "delta") {
+            answer += event.text || "";
+            ensureAssistant().querySelector(".msg-content").innerHTML = renderAnswer(answer);
+            scrollBottom();
+          } else if (event.type === "blocked") {
+            blocked = true;
+            ensureAssistant().querySelector(".msg-content").innerHTML = renderAnswer(event.message || "这个问题暂时不方便回答，换个问法试试。");
+            ensureAssistant().classList.add("blocked");
+          } else if (event.type === "done") {
+            const msg = event.message || {};
+            citations = msg.citations || citations;
+            degraded = msg.degraded || event.degraded || false;
+            const el = ensureAssistant();
+            el.classList.remove("streaming");
+            el.querySelector(".msg-content").innerHTML = renderAnswer(msg.content || answer);
+            if (citations.length) {
+              el.querySelector(".msg-body").insertAdjacentHTML("beforeend",
+                `<details class="msg-cites"><summary>原文出处（${citations.length}）</summary>${citationList(citations)}</details>`);
+            }
+            if (tools.length) {
+              el.querySelector(".msg-body").insertAdjacentHTML("beforeend",
+                `<div class="msg-tools">${tools.map((t) => `<span class="tool-pill">${TOOL_ICONS[t.name] || "🔧"} ${escapeHtml(t.label || "")}</span>`).join("")}</div>`);
+            }
+            if (degraded) {
+              el.querySelector(".msg-foot").insertAdjacentHTML("afterbegin", `<span class="flag warn">降级回答</span>`);
+            }
+            bindCitationToggles();
+          }
+        }
+      }
+      if (!answer && !blocked) {
+        ensureAssistant().querySelector(".msg-content").innerHTML = `<p class="muted">没有收到回答，请稍后重试。</p>`;
+      }
+      if (!blocked) loadSessions();
+    } catch (err) {
+      document.getElementById("pending-msg")?.remove();
+      if (err.name !== "AbortError") {
+        ensureAssistant().querySelector(".msg-content").innerHTML =
+          `<p class="alert error">${escapeHtml(err.message || "发送失败，请检查网络")}</p>`;
+      }
+    } finally {
+      state.streaming = false;
+      state.abort = null;
+      sendBtn.disabled = false;
+      input.focus();
+      scrollBottom();
+    }
+  }
+
+  form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = input.value;
+    input.value = "";
+    autoGrow();
+    send(text);
+  });
+
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  function autoGrow() {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+  }
+  input?.addEventListener("input", autoGrow);
+
+  document.getElementById("suggestions")?.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-q]");
+    if (btn) send(btn.dataset.q);
+  });
+
+  document.getElementById("new-chat")?.addEventListener("click", newChat);
+  document.getElementById("toggle-sidebar")?.addEventListener("click", () => {
+    document.getElementById("chat-sidebar").classList.toggle("open");
+  });
+
+  /* ---------- 书籍上下文 ---------- */
+  async function loadContext() {
+    if (!state.bookId) return;
+    try {
+      const book = await api.get(`/books/${state.bookId}`);
+      state.bookTitle = book.title;
+      const ctx = document.getElementById("chat-context");
+      ctx.hidden = false;
+      document.getElementById("context-title").textContent = `《${book.title}》`;
+    } catch {
+      state.bookId = null;
+    }
+  }
+  document.getElementById("clear-context")?.addEventListener("click", () => {
+    state.bookId = null;
+    state.bookTitle = "";
+    document.getElementById("chat-context").hidden = true;
+    const url = new URL(location.href);
+    url.searchParams.delete("book_id");
+    history.replaceState(null, "", url);
+  });
+
+  /* ---------- 长期记忆 ---------- */
+  async function openMemory() {
+    const panel = document.getElementById("memory-panel");
+    panel.hidden = false;
+    const listEl = document.getElementById("memory-list");
+    listEl.innerHTML = `<li class="skeleton" style="height:48px"></li>`;
+    try {
+      const rows = await api.get("/memory?limit=50");
+      if (!rows.length) {
+        listEl.innerHTML = `<li class="muted">还没有提炼出长期偏好。多聊几次，或说「我更喜欢短篇」这类偏好。</li>`;
+        return;
+      }
+      listEl.innerHTML = rows.map((m) => `
+        <li class="memory-item">
+          <div>
+            <p>${escapeHtml(m.content)}</p>
+            <span class="small muted">${escapeHtml(m.kind || "偏好")} · 置信度 ${m.confidence ?? "—"} · ${relTime(m.updated_at || m.created_at)}</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" type="button" data-del-memory="${m.id}">删除</button>
+        </li>`).join("");
+      listEl.querySelectorAll("[data-del-memory]").forEach((btn) => btn.addEventListener("click", async () => {
+        try {
+          await api.del(`/memory/${btn.dataset.delMemory}`);
+          btn.closest("li").remove();
+          toast("已删除这条记忆", "ok");
+        } catch (err) {
+          toast(err.message, "bad");
+        }
+      }));
+    } catch (err) {
+      listEl.innerHTML = `<li class="alert error">${escapeHtml(err.message)}</li>`;
+    }
+  }
+  document.getElementById("open-memory")?.addEventListener("click", openMemory);
+  document.getElementById("close-memory")?.addEventListener("click", () => {
+    document.getElementById("memory-panel").hidden = true;
+  });
+
+  (async function boot() {
+    if (!me) return;
+    await Promise.all([loadSessions(), loadContext()]);
+    if (state.sessionId) await openSession(state.sessionId);
+    input.focus();
+  })();
+</script>
+{% endblock %}

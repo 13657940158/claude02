@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="{% block description %}墨舟 BookMate：按性格与目标选书、拆书、排计划、陪你读。{% endblock %}">
+  <meta name="theme-color" content="#2f5d50">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/main.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/pages.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/" aria-label="{{ app_name }} 首页">
+        <span class="brand-mark" aria-hidden="true">墨</span>
+        <span class="brand-text">{{ app_name }}</span>
+      </a>
+      <button class="nav-toggle" type="button" aria-label="展开导航" aria-expanded="false" data-nav-toggle>
+        <span></span><span></span><span></span>
+      </button>
+      <nav class="site-nav" aria-label="主导航" data-nav>
+        <a href="/" {% if request.url.path == "/" %}aria-current="page"{% endif %}>首页</a>
+        <a href="/books" {% if request.url.path.startswith("/books") %}aria-current="page"{% endif %}>书架</a>
+        <a href="/recommend" {% if request.url.path == "/recommend" %}aria-current="page"{% endif %}>为我推荐</a>
+        <a href="/chat" {% if request.url.path == "/chat" %}aria-current="page"{% endif %}>阅读客服</a>
+        <a href="/plans" {% if request.url.path.startswith("/plans") %}aria-current="page"{% endif %}>导读计划</a>
+        <a href="/progress" {% if request.url.path == "/progress" %}aria-current="page"{% endif %}>我的阅读</a>
+      </nav>
+      <div class="header-actions" id="nav-auth" aria-live="polite">
+        <a class="btn btn-ghost" href="/login">登录</a>
+        <a class="btn btn-primary" href="/register">开始使用</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <p>{{ app_name }} · 让选书和读书都更轻一点</p>
+      <p class="muted">阅读数据仅用于个性化服务 · <a href="/privacy">隐私说明</a> · v{{ version }} · {{ app_env }}</p>
+    </div>
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="{{ url_for('static', path='/js/common.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

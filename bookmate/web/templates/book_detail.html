@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+
+{% block title %}书籍详情 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<div id="book-root" data-book-id="{{ request.path_params.get('book_id', '') }}">
+  <div class="book-hero">
+    <div class="skeleton" style="height:340px"></div>
+    <div class="skeleton" style="height:340px"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import { api, escapeHtml, toast, showAlert, setBusy, relTime } from "{{ url_for('static', path='/js/common.js') }}";
+
+  const root = document.getElementById("book-root");
+  const bookId = Number(root.dataset.bookId);
+  const COVER_COLORS = ["#dfe9e3", "#efe4d4", "#e3e0ef", "#e9dfe4", "#dfe7ef", "#e8ead9"];
+  let state = { book: null, analysis: null, analysisLoading: false };
+
+  const STATUS_LABELS = { absent: "尚未生成", running: "生成中", ready: "已生成", failed: "生成失败" };
+
+  function renderBook(book) {
+    const bg = COVER_COLORS[book.id % COVER_COLORS.length];
+    const chapterList = (book.chapters || []).map((ch) => `
+      <li id="chapter-${ch.chapter_no}">
+        <span class="chapter-no">${String(ch.chapter_no).padStart(2, "0")}</span>
+        <div><strong>${escapeHtml(ch.title)}</strong>
+          <p class="muted small">${ch.char_count ? `${ch.char_count} 字` : ""} ${ch.summary ? " · " + escapeHtml(ch.summary.slice(0, 60)) : ""}</p>
+        </div>
+      </li>`).join("");
+
+    root.innerHTML = `
+      <nav class="breadcrumb" aria-label="面包屑">
+        <a href="/books">书架</a><span>/</span><span>${escapeHtml(book.title)}</span>
+      </nav>
+      <section class="book-hero">
+        <div class="book-cover-large" style="background:${bg}">
+          ${book.cover_url ? `<img src="${escapeHtml(book.cover_url)}" alt="">` : `<span>${escapeHtml(book.title)}</span><small>${escapeHtml(book.author || "")}</small>`}
+        </div>
+        <div class="book-info">
+          <p class="eyebrow">${escapeHtml(book.category || "未分类")}</p>
+          <h1>${escapeHtml(book.title)}</h1>
+          <p class="book-author">${escapeHtml(book.author || "佚名")}${book.publish_year ? ` · ${book.publish_year}` : ""}</p>
+          <div class="book-stats">
+            <div><strong>${book.rating ? book.rating.toFixed(1) : "—"}</strong><span>评分</span></div>
+            <div><strong>${book.difficulty || "—"}</strong><span>难度 / 5</span></div>
+            <div><strong>${book.chapter_count || 0}</strong><span>章节</span></div>
+            <div><strong>${book.total_minutes ? Math.round(book.total_minutes / 60) : "—"}</strong><span>预估小时</span></div>
+          </div>
+          <div class="tag-row">${(book.tags || []).map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("")}</div>
+          <p class="book-intro">${escapeHtml(book.intro || "暂无简介。")}</p>
+          <div class="book-cta">
+            <a class="btn btn-primary" href="/plans/new?book_id=${book.id}">排一个导读计划</a>
+            <a class="btn btn-ghost" href="/chat?book_id=${book.id}">就这本书问客服</a>
+            <a class="btn btn-ghost" href="/books">返回书架</a>
+          </div>
+          <p class="muted small">${book.has_corpus ? `原文已入库，可检索 ${book.chapter_count} 章内容；回答会标注章节出处。` : "这本书尚未入库原文，目前只能查看书目信息与生成解析。"}</p>
+        </div>
+      </section>
+
+      <section class="book-tabs" aria-label="书籍内容">
+        <div class="tab-list" role="tablist">
+          <button class="tab active" type="button" role="tab" data-tab="analysis" aria-selected="true">拆书解析</button>
+          <button class="tab" type="button" role="tab" data-tab="chapters" aria-selected="false">章节地图</button>
+          <button class="tab" type="button" role="tab" data-tab="extras" aria-selected="false">听书 · 课程 · 文旅</button>
+        </div>
+
+        <div class="tab-panel active" id="tab-analysis" role="tabpanel">
+          <div id="analysis-body"><div class="skeleton" style="height:240px"></div></div>
+        </div>
+
+        <div class="tab-panel" id="tab-chapters" role="tabpanel" hidden>
+          <div class="panel-head"><h2>章节地图</h2><span class="muted small">共 ${book.chapters?.length || 0} 章</span></div>
+          ${chapterList ? `<ol class="chapter-list">${chapterList}</ol>` : `<p class="muted">暂无章节数据。管理员可在后台入库原文。</p>`}
+        </div>
+
+        <div class="tab-panel" id="tab-extras" role="tabpanel" hidden>
+          <div class="panel-head"><h2>业务域延伸</h2><span class="muted small">听书 / 教育 / 文旅 / 金融</span></div>
+          <div id="extras-body" class="grid-2">
+            <div class="skeleton" style="height:120px"></div>
+            <div class="skeleton" style="height:120px"></div>
+          </div>
+        </div>
+      </section>`;
+
+    root.querySelectorAll("[data-tab]").forEach((btn) => btn.addEventListener("click", () => {
+      root.querySelectorAll("[data-tab]").forEach((el) => {
+        el.classList.toggle("active", el === btn);
+        el.setAttribute("aria-selected", String(el === btn));
+      });
+      root.querySelectorAll(".tab-panel").forEach((panel) => {
+        const active = panel.id === `tab-${btn.dataset.tab}`;
+        panel.classList.toggle("active", active);
+        panel.hidden = !active;
+      });
+      if (btn.dataset.tab === "extras") loadExtras();
+    }));
+  }
+
+  async function loadAnalysis(force = false) {
+    const box = document.getElementById("analysis-body");
+    if (!box || state.analysisLoading) return;
+    state.analysisLoading = true;
+    if (force) box.innerHTML = `<div class="skeleton" style="height:240px"></div>`;
+    try {
+      let data = force ? null : await api.get(`/rag/books/${bookId}/analysis`);
+      if (!data || data.status === "absent" || force) {
+        if (force) {
+          box.innerHTML = `<p class="muted">正在基于原文生成解析，通常需要 20-60 秒…</p>`;
+          data = await api.post(`/rag/books/${bookId}/analysis`, { force: true, chapter_limit: 12 });
+        }
+      }
+      state.analysis = data;
+      renderAnalysis(data);
+    } catch (err) {
+      box.innerHTML = `<div class="alert error">解析加载失败：${escapeHtml(err.message)}</div>`;
+    } finally {
+      state.analysisLoading = false;
+    }
+  }
+
+  function renderAnalysis(data) {
+    const box = document.getElementById("analysis-body");
+    if (!box) return;
+    if (!data || data.status === "absent") {
+      box.innerHTML = `
+        <div class="empty-analysis">
+          <h2>还没有这本书的解析</h2>
+          <p class="muted">解析会从原文提炼主旨、章节结构、核心观点与金句，每条都带原文依据。</p>
+          <button class="btn btn-primary" type="button" id="gen-analysis">生成拆书解析</button>
+          ${!state.book?.has_corpus ? `<p class="muted small">提示：该书原文未入库，需管理员先上传语料。</p>` : ""}
+        </div>`;
+      box.querySelector("#gen-analysis")?.addEventListener("click", () => loadAnalysis(true));
+      return;
+    }
+    if (data.status === "running") {
+      box.innerHTML = `<p class="muted">解析生成中… <button class="btn btn-ghost btn-sm" type="button" id="refresh-analysis">刷新</button></p>`;
+      box.querySelector("#refresh-analysis")?.addEventListener("click", () => loadAnalysis(false));
+      return;
+    }
+    if (data.status === "failed") {
+      box.innerHTML = `<div class="alert error">解析生成失败：${escapeHtml(data.error || "未知错误")}</div>
+        <button class="btn btn-primary" type="button" id="retry-analysis">重试</button>`;
+      box.querySelector("#retry-analysis")?.addEventListener("click", () => loadAnalysis(true));
+      return;
+    }
+
+    const themes = (data.themes || []).map((t) => `<span class="tag">${escapeHtml(typeof t === "string" ? t : t.name || "")}</span>`).join("");
+    const points = (data.key_points || []).map((p) => `
+      <li class="${p.unverified ? "unverified" : ""}">
+        <strong>${escapeHtml(p.point || p.title || "")}</strong>
+        <p>${escapeHtml(p.explanation || p.detail || "")}</p>
+        ${(p.citations || []).map((c) => `<blockquote>${escapeHtml(c.quote || "")}<cite>${escapeHtml(c.chapter_title || `第${c.chapter_no || ""}章`)}</cite></blockquote>`).join("")}
+        ${p.unverified ? `<span class="tag tag-warn">原文未完全核验</span>` : ""}
+      </li>`).join("");
+    const quotes = (data.quotes || []).map((q) => `
+      <figure class="quote-card">
+        <blockquote>${escapeHtml(q.quote || q.text || "")}</blockquote>
+        <figcaption>${escapeHtml(q.chapter_title || (q.chapter_no ? `第${q.chapter_no}章` : ""))}</figcaption>
+      </figure>`).join("");
+    const tips = (data.reading_tips || []).map((tip) => `<li>${escapeHtml(typeof tip === "string" ? tip : tip.text || "")}</li>`).join("");
+
+    box.innerHTML = `
+      <article class="analysis">
+        <header class="analysis-head">
+          <div>
+            <p class="eyebrow">BOOK ANALYSIS</p>
+            <h2>${escapeHtml(data.one_line || data.summary || "拆书解析")}</h2>
+            <p class="muted small">${data.citation_count || 0} 条原文引用 · 提示词 ${escapeHtml(data.prompt_version || "")} · ${STATUS_LABELS[data.status] || data.status}</p>
+          </div>
+          <div class="tag-row">${themes}</div>
+        </header>
+        ${data.summary && data.summary !== data.one_line ? `<p class="analysis-summary">${escapeHtml(data.summary)}</p>` : ""}
+
+        <div class="analysis-grid">
+          <section>
+            <h3>核心观点</h3>
+            ${points ? `<ol class="point-list">${points}</ol>` : `<p class="muted">暂无观点。</p>`}
+          </section>
+          <aside>
+            <h3>金句摘录</h3>
+            ${quotes || `<p class="muted">暂无通过校验的引用。</p>`}
+            ${tips ? `<h3 class="mt-24">阅读建议</h3><ul class="tip-list">${tips}</ul>` : ""}
+          </aside>
+        </div>
+
+        <div class="analysis-actions">
+          <a class="btn btn-primary" href="/plans/new?book_id=${bookId}">用这本书排计划</a>
+          <a class="btn btn-ghost" href="/chat?book_id=${bookId}">问客服书里的问题</a>
+          <button class="btn btn-ghost" type="button" id="regen-analysis">重新生成解析</button>
+        </div>
+      </article>`;
+    box.querySelector("#regen-analysis")?.addEventListener("click", () => {
+      if (confirm("重新生成会覆盖当前解析并消耗一次在线模型调用，确定继续？")) loadAnalysis(true);
+    });
+  }
+
+  let extrasLoaded = false;
+  async function loadExtras() {
+    if (extrasLoaded) return;
+    extrasLoaded = true;
+    const box = document.getElementById("extras-body");
+    try {
+      const data = await api.post("/domains/query", { domains: ["audio", "edu", "travel", "finance"], query: state.book?.title || "" });
+      const labels = { audio: "听书", edu: "教育", travel: "文旅", finance: "金融" };
+      box.innerHTML = (data.results || data || []).map((item) => `
+        <article class="card domain-card">
+          <div class="panel-head"><h3>${labels[item.domain] || item.domain}</h3>
+            <span class="tag ${item.ok ? "" : "tag-warn"}">${item.degraded ? "降级" : item.source || ""}</span></div>
+          <p class="muted small">${escapeHtml(item.summary || "暂无结果")}</p>
+          <ul class="domain-items">
+            ${(item.items || []).map((row) => `<li><strong>${escapeHtml(row.title || "")}</strong>
+              <span class="muted small">${escapeHtml(row.city || row.provider || row.narrator || "")} ${row.hours ? `· ${row.hours} 小时` : ""}</span></li>`).join("")}
+          </ul>
+        </article>`).join("") || `<p class="muted">暂无业务域数据。</p>`;
+    } catch (err) {
+      box.innerHTML = `<div class="alert error">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  async function boot() {
+    try {
+      const book = await api.get(`/books/${bookId}`);
+      state.book = book;
+      renderBook(book);
+      if (book.has_corpus) loadAnalysis(false);
+      else renderAnalysis({ status: "absent" });
+    } catch (err) {
+      root.innerHTML = `<div class="empty-state"><h1>没有找到这本书</h1>
+        <p class="muted">${escapeHtml(err.message)}</p><a class="btn btn-primary" href="/books">回到书架</a></div>`;
+    }
+  }
+
+  boot();
+</script>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}服务暂时开小差 · {{ app_name }}{% endblock %}
+
+{% block content %}
+<section class="error-page">
+  <div class="error-code" aria-hidden="true">500</div>
+  <div class="error-copy">
+    <p class="eyebrow">SERVER ERROR</p>
+    <h1>服务暂时开小差了</h1>
+    <p class="muted">页面渲染或服务内部出现了问题，已经记录日志。稍后刷新即可；如果一直出现，请联系项目维护者。</p>
+    <div class="row-actions">
+      <button class="btn btn-primary" type="button" onclick="location.reload()">刷新重试</button>
+      <a class="btn btn-ghost" href="/">回到首页</a>
+    </div>
+    <p class="muted small">你的阅读计划、进度与笔记不会因为这次错误丢失。</p>
+  </div>
+</section>
+{% endblock %}
